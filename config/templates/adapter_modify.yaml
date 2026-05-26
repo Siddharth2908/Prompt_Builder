@@ -21,15 +21,15 @@
 #   │ custom_format.*                 │ Registry update + CODE CHANGE needed   │
 #   └─────────────────────────────────┴────────────────────────────────────────┘
 #
-#   When a CODE CHANGE is detected, pb-cli prints a diff of what needs to
+#   When a CODE CHANGE is detected, ac-cli prints a diff of what needs to
 #   change in the class file and optionally re-runs scaffold generation
 #   (--regenerate flag). The engineer then implements the updated stubs.
 #
 # USAGE
 #   1. Copy this template, fill in 'name' and only the fields you are changing
-#   2. Validate:   pb-cli adapter validate-modify --config <file>
-#   3. Dry-run:    pb-cli adapter modify --config <file> --dry-run
-#   4. Apply:      pb-cli adapter modify --config <file> [--regenerate]
+#   2. Validate:   ac-cli adapter validate-modify --config <file>
+#   3. Dry-run:    ac-cli adapter modify --config <file> --dry-run
+#   4. Apply:      ac-cli adapter modify --config <file> [--regenerate]
 #
 # IDEMPOTENCY
 #   Running the same modify YAML twice is safe. If the current registry state

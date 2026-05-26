@@ -16,9 +16,9 @@
 #      (e.g. IDP_INVOICE_US_onboarding.yaml)
 #   2. Place section content files under config/sections/<awa_consumer_id>/
 #      or provide inline content directly in this file
-#   3. Validate:  pb-cli use-case validate --config <file>
-#   4. Dry-run:   pb-cli use-case onboard  --config <file> --dry-run
-#   5. Apply:     pb-cli use-case onboard  --config <file> --env staging
+#   3. Validate:  ac-cli use-case validate --config <file>
+#   4. Dry-run:   ac-cli use-case onboard  --config <file> --dry-run
+#   5. Apply:     ac-cli use-case onboard  --config <file> --env staging
 #
 # WHAT THE COMMAND DOES
 #   - Validates this YAML against UseCaseOnboardSchema (Pydantic)
@@ -27,7 +27,7 @@
 #   - Writes section snapshots to the snapshot store (S3/Blob)
 #   - Prints a summary and any warnings (e.g. token budget close to threshold)
 #   - Supports --dry-run to preview without writing
-#   - Supports rollback: pb-cli use-case rollback --consumer-id <id>
+#   - Supports rollback: ac-cli use-case rollback --consumer-id <id>
 # ==============================================================================
 
 use_case:

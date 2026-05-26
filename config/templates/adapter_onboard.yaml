@@ -14,9 +14,9 @@
 #   1. Copy this template, rename it to describe your adapter
 #      (e.g. compass_core42_adapter.yaml)
 #   2. Fill in required fields. Remove sections that don't apply.
-#   3. Validate:  pb-cli adapter validate --config <file>
-#   4. Dry-run:   pb-cli adapter onboard  --config <file> --dry-run
-#   5. Apply:     pb-cli adapter onboard  --config <file> --output-dir ./awa_prompt_builder/adapters/<type>/
+#   3. Validate:  ac-cli adapter validate --config <file>
+#   4. Dry-run:   ac-cli adapter onboard  --config <file> --dry-run
+#   5. Apply:     ac-cli adapter onboard  --config <file> --output-dir ./awa_agent_cortex/adapters/<type>/
 #
 # WHAT THE COMMAND DOES
 #   - Validates this YAML against the AdapterOnboardSchema (Pydantic)
@@ -142,5 +142,5 @@ adapter:
   scaffold:
     generate_class: true          # Generate the Python adapter class file
     generate_tests: true          # Generate a pytest test skeleton
-    output_module:  REQUIRED      # Relative path within awa_prompt_builder/
+    output_module:  REQUIRED      # Relative path within awa_agent_cortex/
                                   # e.g. adapters/llm  or  adapters/messaging

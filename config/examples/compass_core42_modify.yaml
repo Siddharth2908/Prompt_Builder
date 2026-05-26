@@ -12,7 +12,7 @@ adapter_modify:
 
   # Only these two LLM fields are changing — everything else stays as-is
   llm:
-    context_window: 131072        # was 65536 — CODE CHANGE: pb-cli will prompt to regenerate
+    context_window: 131072        # was 65536 — CODE CHANGE: ac-cli will prompt to regenerate
 
     supported_models:             # Full replacement of the list
       - compass-core42-v1
