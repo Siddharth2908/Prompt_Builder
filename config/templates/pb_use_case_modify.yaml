@@ -1,5 +1,5 @@
 # ==============================================================================
-# AWA Prompt Builder — Use Case Modification Template
+# AWA Agent Cortex — Use Case Modification Template
 # ==============================================================================
 #
 # PURPOSE
@@ -58,7 +58,7 @@ use_case_modify:
 
   # ── Block 2: Dynamic dependency config change ───────────────────────────────
   # Effect: DB update + publishes DynamicConfigChanged on awa.dynamic.config.changed
-  #         Prompt Builder cache is invalidated on next event.
+  #         AWA Agent Cortex cache is invalidated on next event.
   # Omit this block entirely if dynamic config is not changing.
   # Omit individual component blocks if that component is not changing.
   dynamic_dependency_config:

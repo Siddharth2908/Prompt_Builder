@@ -1,7 +1,7 @@
-# AWA Prompt Builder — FMEA & Architecture Risk Register
+# AWA Agent Cortex — FMEA & Architecture Risk Register
 
 **Version:** 1.0.0  **Date:** 2026-05-26  **Status:** Final  
-**Reference TDD:** AWA_Prompt_Builder_TDD.md v3.0.0  
+**Reference TDD:** AWA_Agent_Cortex_TDD.md v3.0.0  
 **Scope:** Failure Modes · Threat Modelling · Performance · Runtime Conflict Management
 
 ---
@@ -20,7 +20,7 @@
 
 ## 1. Document Purpose & Methodology
 
-This document is an independent critique of the AWA Prompt Builder architecture (TDD v3.0.0) across four axes:
+This document is an independent critique of the AWA Agent Cortex architecture (TDD v3.0.0) across four axes:
 
 | Axis | Question Asked |
 |---|---|
@@ -71,7 +71,7 @@ This document is an independent critique of the AWA Prompt Builder architecture 
 
 **Situation:** RAG pipeline goes down. `wait_strategy=REQUIRED, on_timeout=FAIL`.
 
-**Effect:** Every job for the affected consumer fails for the entire `timeout_ms` window. There is no circuit breaker to short-circuit the wait once a failure pattern is detected. Agents appear to run but every LLM call silently fails at the Prompt Builder layer.
+**Effect:** Every job for the affected consumer fails for the entire `timeout_ms` window. There is no circuit breaker to short-circuit the wait once a failure pattern is detected. Agents appear to run but every LLM call silently fails at the Agent Cortex layer.
 
 **Fix:** Track RAG timeout rate per consumer per 60-second sliding window. If failure rate exceeds 80%, auto-downgrade `REQUIRED → OPTIONAL` for new jobs and emit a `RAG_PIPELINE_CIRCUIT_OPEN` ops alert. This is a **service-level automatic degradation**, not a manual config change.
 
@@ -83,7 +83,7 @@ This document is an independent critique of the AWA Prompt Builder architecture 
 
 **Effect — Option A (silently proceed):** Quality gates are bypassed. Low-confidence OCR content, stale sections, and injected RAG content all flow into the LLM payload undetected.
 
-**Effect — Option B (fail the build):** Every build is now dependent on the health of the observer. A downstream embedding service outage cascades into a Prompt Builder outage.
+**Effect — Option B (fail the build):** Every build is now dependent on the health of the observer. A downstream embedding service outage cascades into a Agent Cortex outage.
 
 Both options are dangerous. The TDD does not specify which applies.
 
@@ -117,7 +117,7 @@ if not await redis.set(key, "1", nx=True, ex=3600):
 
 #### Scenario D — Concurrent Assembly Race (Critical)
 
-**Situation:** Three Prompt Builder replicas are running. Two replicas each process a different event for the same job (e.g., replica-1 processes `RAGContextRetrievedEvent`, replica-2 processes `AgentContextReadyEvent`). Both see the checklist complete at the same instant and both attempt the `READY_TO_ASSEMBLE → ASSEMBLING` transition.
+**Situation:** Three Agent Cortex replicas are running. Two replicas each process a different event for the same job (e.g., replica-1 processes `RAGContextRetrievedEvent`, replica-2 processes `AgentContextReadyEvent`). Both see the checklist complete at the same instant and both attempt the `READY_TO_ASSEMBLE → ASSEMBLING` transition.
 
 **Effect:** Two assembly processes run in parallel for the same job. Two `PromptBuiltEvent` messages are published. The LLM caller receives duplicate prompts.
 
@@ -168,7 +168,7 @@ async def sweep_stuck_jobs():
 
 **Situation:** `InProcessEventBus` uses `asyncio.Queue` per event type with no stated capacity limit. Under a burst load inside a LangGraph or CrewAI application process, queues grow unboundedly.
 
-**Effect:** The framework application process OOMs before the Prompt Builder emits any backpressure signal. No graceful degradation.
+**Effect:** The framework application process OOMs before the Agent Cortex emits any backpressure signal. No graceful degradation.
 
 **Fix:** Bound the queue at construction time:
 
@@ -360,13 +360,13 @@ The TDD specifies JWT authentication for REST APIs but says nothing about Kafka 
 
 | Topic | Authorised Producer | Authorised Consumer |
 |---|---|---|
-| `awa.prompt.build.requested` | API Gateway service account | Prompt Builder service account |
-| `awa.prompt.rag.retrieved` | RAG Pipeline service account | Prompt Builder service account |
-| `awa.prompt.agent.context.ready` | CoT/ToT Engine service account | Prompt Builder service account |
-| `awa.prompt.dynamic.timeout` | Timer Service service account | Prompt Builder service account |
-| `awa.prompt.built` | Prompt Builder service account | LLM Caller, Context Observer, Audit |
-| `awa.version.changed` | Version Manager service account | Prompt Builder service account |
-| `awa.section.flag.changed` | Control Plane API service account | Prompt Builder service account |
+| `awa.prompt.build.requested` | API Gateway service account | Agent Cortex service account |
+| `awa.prompt.rag.retrieved` | RAG Pipeline service account | Agent Cortex service account |
+| `awa.prompt.agent.context.ready` | CoT/ToT Engine service account | Agent Cortex service account |
+| `awa.prompt.dynamic.timeout` | Timer Service service account | Agent Cortex service account |
+| `awa.prompt.built` | Agent Cortex service account | LLM Caller, Context Observer, Audit |
+| `awa.version.changed` | Version Manager service account | Agent Cortex service account |
+| `awa.section.flag.changed` | Control Plane API service account | Agent Cortex service account |
 
 ---
 
@@ -435,7 +435,7 @@ Job state, checklists, and all state machine data live in Redis. The TDD does no
 
 ### 4.1 Latency Budget — Hot Path Breakdown
 
-Every LLM call passes through the Prompt Builder. With agent frameworks running 5–15 tool steps per request, the Prompt Builder overhead compounds per step. Below is the per-build latency breakdown for the fast path (no dynamic components, no RAG wait):
+Every LLM call passes through the Agent Cortex. With agent frameworks running 5–15 tool steps per request, the Agent Cortex overhead compounds per step. Below is the per-build latency breakdown for the fast path (no dynamic components, no RAG wait):
 
 | Step | Estimated Latency | Bottleneck? |
 |---|---|---|
@@ -454,7 +454,7 @@ Every LLM call passes through the Prompt Builder. With agent frameworks running 
 | **Total: fast path, with embeddings** | **~200–600ms** | |
 | **Total: with RAG wait (REQUIRED)** | **+timeout_ms** | Up to +6,000ms additional |
 
-For a CrewAI or LangGraph agent running 10 steps, uncached embeddings add **2–6 seconds** of Prompt Builder overhead on top of LLM inference time. This is untenable for a production central service.
+For a CrewAI or LangGraph agent running 10 steps, uncached embeddings add **2–6 seconds** of Agent Cortex overhead on top of LLM inference time. This is untenable for a production central service.
 
 ---
 
@@ -656,7 +656,7 @@ metrics:
 | Multi-signal HPA (B6) | Earlier scale-out; lower p99 tail | Medium |
 | Pre-warm caches on startup | Eliminates cold-start DB spike | Low |
 
-**Combined expected improvement on the fast path: 150–300ms → 30–60ms.** This changes the Prompt Builder from a perceptible latency addition per agent step to sub-perceptible overhead.
+**Combined expected improvement on the fast path: 150–300ms → 30–60ms.** This changes the Agent Cortex from a perceptible latency addition per agent step to sub-perceptible overhead.
 
 ---
 
@@ -747,7 +747,7 @@ The TDD only specifies that `required=true` slots (only `p_guard`) skip the enab
 
 #### Race A — Concurrent Checklist Update | Probability: HIGH at scale
 
-Three Kafka partitions deliver `RAGContextRetrievedEvent`, `AgentContextReadyEvent`, and `DynamicComponentTimeoutEvent` to three different Prompt Builder replicas at the same millisecond.
+Three Kafka partitions deliver `RAGContextRetrievedEvent`, `AgentContextReadyEvent`, and `DynamicComponentTimeoutEvent` to three different Agent Cortex replicas at the same millisecond.
 
 **Scenario:**
 ```
@@ -892,4 +892,4 @@ Each invariant must have a named unit test asserting the invariant holds under v
 ---
 
 *Document version: 1.0.0 — 2026-05-26*  
-*Reference: AWA_Prompt_Builder_TDD.md v3.0.0*
+*Reference: AWA_Agent_Cortex_TDD.md v3.0.0*

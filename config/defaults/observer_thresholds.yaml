@@ -1,5 +1,5 @@
 # =============================================================================
-# AWA Prompt Builder — Global Observer Threshold Defaults
+# AWA Agent Cortex — Global Observer Threshold Defaults
 # =============================================================================
 # These values are the baseline for ALL consumers, tasks, and jobs.
 # Override hierarchy (each level overrides the one above):
