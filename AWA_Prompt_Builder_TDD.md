@@ -1,7 +1,7 @@
 # AWA Prompt Builder — Technical Design Document
 
-**Version:** 2.0.0  **Date:** 2026-05-26  **Status:** Pending Confirmation  
-**Language:** Python 3.12  **Architecture:** Event-Driven Microservice · Hexagonal
+**Version:** 3.0.0  **Date:** 2026-05-26  **Status:** Final  
+**Language:** Python 3.12  **Architecture:** Event-Driven Microservice · Hexagonal · Framework-Composable
 
 ---
 
@@ -18,16 +18,17 @@
 9. [Onboarding Framework](#9-onboarding-framework)
 10. [Modification Framework](#10-modification-framework)
 11. [Event Architecture](#11-event-architecture)
-12. [Control Plane REST API](#12-control-plane-rest-api)
-13. [pb-cli Reference](#13-pb-cli-reference)
-14. [Full Module & Class Reference](#14-full-module--class-reference)
-15. [UML Diagrams](#15-uml-diagrams)
-16. [Design Patterns](#16-design-patterns)
-17. [SOLID Compliance](#17-solid-compliance)
-18. [Technology Stack](#18-technology-stack)
-19. [Deployment Architecture](#19-deployment-architecture)
-20. [Security](#20-security)
-21. [Phased Delivery Roadmap](#21-phased-delivery-roadmap)
+12. [Framework Integrations](#12-framework-integrations)
+13. [Control Plane REST API](#13-control-plane-rest-api)
+14. [pb-cli Reference](#14-pb-cli-reference)
+15. [Full Module & Class Reference](#15-full-module--class-reference)
+16. [UML Diagrams](#16-uml-diagrams)
+17. [Design Patterns](#17-design-patterns)
+18. [SOLID Compliance](#18-solid-compliance)
+19. [Technology Stack](#19-technology-stack)
+20. [Deployment Architecture](#20-deployment-architecture)
+21. [Security](#21-security)
+22. [Phased Delivery Roadmap](#22-phased-delivery-roadmap)
 
 ---
 
@@ -37,6 +38,8 @@ The **AWA Prompt Builder** is a runtime prompt construction microservice that as
 
 Every prompt is built in the context of a **use case** (`AWA_Consumer_ID`) and a **single LLM call** (`AWA_Job_ID`). The framework provides complete lifecycle management: onboarding new adapters and use cases via YAML templates, modifying parameters through sparse diff YAMLs, version-controlling every change, and observing assembled prompts for quality signals before they reach the LLM.
 
+In v3.0.0, AWA Prompt Builder extends beyond standalone microservice operation. A new **Framework Integration** layer allows it to be embedded directly inside **LangGraph**, **Semantic Kernel**, and **CrewAI** applications — either as a graph node, a kernel filter, a custom LLM wrapper, or a callable tool — with no changes to the core assembly engine. Three deployment modes (`service`, `library`, `hybrid`) and a pluggable in-process event bus make this possible without breaking existing Kafka-based deployments.
+
 ---
 
 ## 2. Feature Inventory
@@ -45,7 +48,7 @@ Every prompt is built in the context of a **use case** (`AWA_Consumer_ID`) and a
 
 | # | Feature |
 |---|---|
-| F-01 | Runtime assembly of prompts from 10 discrete, versioned components |
+| F-01 | Runtime assembly of prompts from 11 discrete, versioned components |
 | F-02 | `AWA_Consumer_ID` scoping (use case level) and `AWA_Job_ID` scoping (per LLM call) |
 | F-03 | `p_template` controls slot order, placement (system/user), and enabled state |
 | F-04 | Token budget enforcement per placement with automatic RAG source trimming |
@@ -161,6 +164,21 @@ Every prompt is built in the context of a **use case** (`AWA_Consumer_ID`) and a
 | F-64 | Live job state API endpoint (`GET /api/v1/jobs/{id}/state`) |
 | F-65 | Timeout-rate-per-dynamic-component metric per consumer |
 
+### 2.12 Framework Integrations
+
+| # | Feature |
+|---|---|
+| F-66 | Three deployment modes: `service` (Kafka-native microservice), `library` (in-process SDK), `hybrid` (service + direct SDK call) |
+| F-67 | `IFrameworkAdapter` port — bidirectional bridge between AWA domain types and framework state models |
+| F-68 | `IEventBus` port with two implementations: `KafkaEventBus` (service mode) and `InProcessEventBus` (library mode, asyncio.Queue-based) |
+| F-69 | **LangGraph**: `PromptBuilderNode` (drop-in graph node), `PromptBuilderRunnable` (LangChain Runnable), `AWAPromptState` TypedDict, `thread_id`→`AWA_Job_ID` correlation, LangGraph checkpointer → `p_agent_context` adapter |
+| F-70 | **Semantic Kernel**: `PromptBuilderPlugin` (KernelPlugin with `@kernel_function`), `PromptEnrichmentFilter` (`IFunctionInvocationFilter` — transparent enrichment), `AWAAIConnector` (AI service wrapper) |
+| F-71 | **CrewAI**: `AWACrewLLM` (`BaseLLM` wrapper — recommended; intercepts every model call), `PromptBuilderTool` (`BaseTool` — tool-mode), `AWAAgentMixin` (maps `Agent.role` → `AWA_Consumer_ID`) |
+| F-72 | `p_tools` — 11th component type; injects framework tool/function schemas into the system prompt; per-consumer slot, enabled/disabled in template |
+| F-73 | `IDCorrelationService` + three `ConsumerResolutionStrategy` implementations: `ExplicitStrategy`, `FrameworkIdentityStrategy`, `ConfigMapStrategy` |
+| F-74 | `ContextBridgeService` — bidirectional mapping: LangGraph `TypedDict` / SK `KernelArguments` / CrewAI task context ↔ `PromptBuildRequest` + `BuiltPrompt` |
+| F-75 | Three memory context adapters implementing `IContextStore` for `p_agent_context`: `LangGraphCheckpointContextAdapter`, `SKVectorMemoryContextAdapter`, `CrewAIMemoryContextAdapter` |
+
 ---
 
 ## 3. System Architecture
@@ -168,46 +186,50 @@ Every prompt is built in the context of a **use case** (`AWA_Consumer_ID`) and a
 ### 3.1 Architecture Style
 
 - **Hexagonal (Ports & Adapters):** domain and service code depend only on abstract port interfaces; all infrastructure bindings in the DI container.
-- **Event-Driven:** Kafka is the coordination backbone; services communicate by publishing and consuming events, never by direct HTTP calls between services.
+- **Event-Driven:** Kafka is the coordination backbone in service mode; services communicate by publishing and consuming events, never by direct HTTP calls.
 - **Stateless services:** per-job state held in Redis (TTL-bounded); services are horizontally scalable.
+- **Framework-Composable:** the `integrations/` layer exposes the same core assembly engine to LangGraph, Semantic Kernel, and CrewAI via a pluggable `IFrameworkAdapter` port — zero changes to domain or service code.
 
 ### 3.2 System Context
 
 ```
-┌────────────────────────────────────────────────────────────────────────────┐
-│                            External Callers                                │
-│    Chat UI  │  Source System API  │  Agent Orchestrator  │  pb-cli         │
-└──────┬───────────────┬───────────────────────┬────────────────┬────────────┘
-       │               │                       │                │
-       ▼               ▼                       ▼                ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                     API Gateway / Ingress                                 │
-│              REST + gRPC  ──  JWT/mTLS Auth  ──  Rate Limit              │
-└─────────────────────────────────┬────────────────────────────────────────┘
-                                  │
-                         ┌────────▼────────┐
-                         │   Apache Kafka   │
-                         │  (Event Bus)     │
-                         └────────┬────────┘
-       ┌──────────────────────────┼──────────────────────────┐
-       ▼                          ▼                          ▼
-┌─────────────┐         ┌─────────────────┐        ┌─────────────────────┐
-│   Prompt    │         │    Version       │        │   Context           │
-│   Builder   │         │    Manager       │        │   Observer          │
-│   Service   │         │    Service       │        │   Service           │
-└──────┬──────┘         └─────────────────┘        └─────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                              External Callers                                   │
+│  Chat UI  │  Source System API  │  Agent Orchestrator  │  pb-cli               │
+│           │                    │  (LangGraph / SK / CrewAI)                    │
+└──────┬────────────────┬─────────────────────────┬──────────────────────────────┘
+       │                │                         │
+       ▼                ▼                         ▼
+       [Kafka Path]     [Kafka Path]       [Library / Direct Path]
+       │                │                         │
+┌──────▼────────────────▼─────────────────────────▼──────────────────────────────┐
+│                          IEventBus (KafkaEventBus | InProcessEventBus)           │
+└──────────────────────────────────────┬──────────────────────────────────────────┘
+                                       │
+              ┌────────────────────────┼──────────────────────────┐
+              ▼                        ▼                          ▼
+┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────────┐
+│   Prompt Builder     │    │   Version Manager    │    │   Context Observer      │
+│   Service            │    │   Service            │    │   Service               │
+└──────┬──────────────┘    └─────────────────────┘    └─────────────────────────┘
        │
-┌──────▼───────────────────────────────────────┐
-│              LLM Adapter Registry             │
-│  OpenAI │ Anthropic │ Gemini │ Llama │ ...   │
-└──────────────────────────────────────────────┘
+┌──────▼──────────────────────────────────────────────────────────┐
+│                    LLM Adapter Registry                          │
+│  OpenAI │ Anthropic │ Gemini │ Llama │ Mistral │ Bedrock │ ...  │
+└──────────────────────────────────────────────────────────────────┘
        │
-┌──────▼──────────────────────────────────────────────────────────────────┐
-│                            Storage Layer                                  │
-│  PostgreSQL (sections, templates, consumers, jobs, audit)                 │
-│  Redis      (job state machine, checklist, TTL)                          │
-│  S3 / Blob  (version snapshots, prompt archives)                         │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────▼───────────────────────────────────────────────────────────────────────┐
+│                               Storage Layer                                    │
+│  PostgreSQL (sections, templates, consumers, jobs, audit)                      │
+│  Redis      (job state machine, checklist, TTL)                               │
+│  S3 / Blob  (version snapshots, prompt archives)                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+       │
+┌──────▼───────────────────────────────────────────────────────────────────────┐
+│                        Integration Layer (integrations/)                       │
+│  LangGraphAdapter  │  SemanticKernelAdapter  │  CrewAIAdapter                 │
+│  ContextBridgeService  │  IDCorrelationService  │  InProcessEventBus          │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 3.3 Service Responsibilities
@@ -219,12 +241,23 @@ Every prompt is built in the context of a **use case** (`AWA_Consumer_ID`) and a
 | **Context Observer** | Bloat and rot detection; emits alerts; applies TRIM strategy |
 | **LLM Adapter Registry** | Translates canonical `SectionMap` into LLM-native prompt format |
 | **Onboarding/Modification** | CLI-driven; manages adapter registry and consumer DB records |
+| **Integration Layer** | Bridges AWA domain to LangGraph / Semantic Kernel / CrewAI |
+
+### 3.4 Deployment Modes
+
+| Mode | Event Bus | Redis | Kafka | Use Case |
+|---|---|---|---|---|
+| `service` | `KafkaEventBus` | Required | Required | Standalone microservice; fully event-driven |
+| `library` | `InProcessEventBus` | Optional (in-proc fallback) | Not required | Embedded SDK inside a LangGraph / SK / CrewAI app |
+| `hybrid` | `KafkaEventBus` | Required | Required | Frameworks orchestrate agents; AWA runs as a service they call via the integration adapters |
+
+Selected via `DEPLOYMENT_MODE` environment variable. The DI container wires the correct `IEventBus` implementation at startup; no other code is affected.
 
 ---
 
 ## 4. Domain Model
 
-### 4.1 The Ten Prompt Components
+### 4.1 The Eleven Prompt Components
 
 | Key | Name | Source | Lifecycle |
 |---|---|---|---|
@@ -238,6 +271,9 @@ Every prompt is built in the context of a **use case** (`AWA_Consumer_ID`) and a
 | `p_agent_conduct` | Agent Conduct / Policy | Agent policy store | Static — per agent |
 | `p_agent_context` | Agent Reflection Context | CoT / ToT / reflection engine | Dynamic — per job, configurable |
 | `p_template` | Assembly Template | Template registry | Static — per consumer, versioned |
+| `p_tools` | Tool / Function Schemas | Framework tool registry | Dynamic — injected by integration layer |
+
+> **p_tools:** Present only when a framework integration is active and the consumer's template has the `p_tools` slot enabled. Injects the JSON schemas of all tools registered with the orchestrating framework into the system message. Placement is always `system`. Subject to bloat detection like any other section.
 
 ### 4.2 Identifiers
 
@@ -247,18 +283,22 @@ AWA_Consumer_ID  ── use case identifier  (e.g. IDP_INVOICE_US)
 ```
 
 **Consumer scope:** template, static sections, version pins, dynamic config, observer thresholds  
-**Job scope:** `p_uq`, `p_rag_context_n`, `p_agent_context`, assembled prompt, job state, observation report
+**Job scope:** `p_uq`, `p_rag_context_n`, `p_agent_context`, `p_tools`, assembled prompt, job state, observation report
 
 ### 4.3 Core Domain Classes
 
 ```python
 # ── Enumerations ────────────────────────────────────────────────────────────
-class ComponentType(str, Enum):    # p_uq | p_guard | p_act_bus | ...
+class ComponentType(str, Enum):
+    # p_uq | p_guard | p_act_bus | p_act_ins | p_act_cond
+    # p_rag_context_n | p_agent_rgb | p_agent_conduct | p_agent_context
+    # p_template | p_tools
 class WaitStrategy(str, Enum):     # NOT_APPLICABLE | OPTIONAL | REQUIRED
 class OnTimeout(str, Enum):        # PROCEED_WITHOUT | FAIL
 class JobState(str, Enum):         # INITIATED | AWAITING_DYNAMIC | READY_TO_ASSEMBLE | ASSEMBLING | BUILT | FAILED
 class Placement(str, Enum):        # system | user
 class AlertSeverity(str, Enum):    # WARN | TRIM | BLOCK
+class DeploymentMode(str, Enum):   # service | library | hybrid
 
 # ── Value objects ───────────────────────────────────────────────────────────
 @dataclass
@@ -286,8 +326,10 @@ class PromptSection:
 class SectionMap:                  # dict[ComponentType, PromptSection | list[RAGSource]]
     def add(component, section) -> None
     def add_rag_sources(sources) -> None
+    def add_tools(schemas: list[dict]) -> None          # new: p_tools injection
     def get(component) -> Optional[PromptSection]
     def get_rag_sources() -> list[RAGSource]
+    def get_tools() -> list[dict]
     def enabled_sections() -> list[PromptSection]
     def total_tokens() -> int
 
@@ -336,6 +378,7 @@ class AWAJob:
     job_id: str; consumer_id: str; llm_model: str; p_uq: str
     state: JobState; checklist: Optional[DynamicChecklist]
     overrides: dict; created_at: datetime
+    framework_context: Optional[dict] = None            # new: carries framework state metadata
 
 @dataclass
 class ObservationReport:
@@ -397,12 +440,12 @@ Valid transitions (frozenset in `JobStateMachine._TRANSITIONS`):
 }
 ```
 
-State is held in **Redis** keyed by `AWA_Job_ID` with TTL = `max(timeout_ms) + 10 s`.
+State is held in **Redis** keyed by `AWA_Job_ID` with TTL = `max(timeout_ms) + 10 s`. In library mode with no Redis configured, an in-process dict with asyncio TTL simulation is used.
 
 ### 5.3 Assembly Pipeline (Internal)
 
 ```
-PromptBuildRequested received
+PromptBuildRequested received (via IEventBus — Kafka or InProcess)
     │
     ├─► Load p_template + DynamicDependencyConfig (from cache/DB)
     ├─► Apply job-level overrides to DynamicDependencyConfig
@@ -416,21 +459,23 @@ PromptBuildRequested received
     ├─► Checklist resolved → READY_TO_ASSEMBLE
     ├─► SectionLoader.load_static_sections(consumer_id, template) → SectionMap
     ├─► Merge arrived dynamic sections (RAG sources, agent context, p_uq) into SectionMap
+    ├─► If p_tools slot enabled → ContextBridgeService.inject_tools(section_map, job) [integration mode]
     ├─► TemplateExecutor.execute(template, section_map, dynamic_config)
     │       ├─ Skip NOT_APPLICABLE slots
+    │       ├─ Skip p_tools slot if not enabled or framework_context absent
     │       ├─ Apply token budget (trim RAG sources if over limit)
     │       └─ Return ordered SectionMap
     │
     ├─► ContextObserverService.observe(section_map, job, template)
     │       → ObservationReport (with WARN / TRIM / BLOCK signals)
     │
-    ├─► BLOCK signal? → FAILED (publish PromptBuildFailed)
+    ├─► BLOCK signal? → FAILED (publish PromptBuildFailed via IEventBus)
     ├─► TRIM signal? → apply trim, re-observe
     │
     ├─► LLMAdapterRegistry.get(llm_model).format(section_map, template)
     │       → LLMPayload (native format for target model)
     │
-    └─► Publish PromptBuilt (with payload + section_manifest + observation_report_ref)
+    └─► Publish PromptBuilt (via IEventBus)
 ```
 
 ### 5.4 Override Precedence
@@ -468,6 +513,7 @@ class ILLMAdapter(ABC):
     context_window: int   # abstract property
     def format(section_map: SectionMap, template: PromptTemplate) -> LLMPayload: ...
     def estimate_tokens(content: str) -> int: ...
+    def as_langchain_model(self) -> "AWALangChainModel": ...  # integration helper
 ```
 
 ### 6.3 Registry
@@ -494,6 +540,7 @@ Populated at startup by `AdapterRegistryLoader` reading `config/adapters_registr
 | Total utilisation | tokens > 95% of context window | BLOCK |
 | Section dominance | one section > 60% of total | WARN |
 | RAG overflow | n sources > `rag_source_limit` | TRIM (drop lowest-score first) |
+| Tools bloat | `p_tools` > 20% of system budget | WARN |
 
 ### 7.2 Rot Detection (`RotDetector`)
 
@@ -629,11 +676,26 @@ Every `modify` writes a rollback snapshot before applying any changes.
 
 ## 11. Event Architecture
 
-### 11.1 Kafka Topics
+### 11.1 IEventBus — Deployment-Mode Abstraction
+
+```python
+class IEventBus(ABC):
+    async def publish(self, topic: str, event: DomainEvent) -> None: ...
+    async def subscribe(self, topic: str, handler: Callable) -> None: ...
+    async def start(self) -> None: ...
+    async def stop(self) -> None: ...
+
+class KafkaEventBus(IEventBus):       # service / hybrid mode — wraps aiokafka
+class InProcessEventBus(IEventBus):   # library mode — asyncio.Queue per topic
+```
+
+All services depend only on `IEventBus`. The DI container selects the implementation based on `DEPLOYMENT_MODE`.
+
+### 11.2 Kafka Topics
 
 | Topic | Publisher | Consumers | Purpose |
 |---|---|---|---|
-| `awa.prompt.build.requested` | API Gateway | Prompt Builder | Trigger assembly |
+| `awa.prompt.build.requested` | API Gateway / Integration Layer | Prompt Builder | Trigger assembly |
 | `awa.prompt.rag.retrieved` | RAG Pipeline | Prompt Builder | Inject RAG context |
 | `awa.prompt.agent.context.ready` | CoT/ToT Engine | Prompt Builder | Inject agent context |
 | `awa.prompt.dynamic.timeout` | Timer Service | Prompt Builder | Dynamic component deadline exceeded |
@@ -646,12 +708,15 @@ Every `modify` writes a rollback snapshot before applying any changes.
 | `awa.section.flag.changed` | Control Plane API | Prompt Builder | Enable/disable section |
 | `awa.dynamic.config.changed` | Control Plane API | Prompt Builder | Dynamic config updated |
 
-### 11.2 Key Event Schemas
+In **library mode**, topic names are used as keys in `InProcessEventBus`'s internal queue map. Semantics are identical; Kafka is not required.
+
+### 11.3 Key Event Schemas
 
 ```python
 # Trigger
 PromptBuildRequestedEvent: event_type, awa_consumer_id, awa_job_id,
-                            llm_model, p_uq, overrides
+                            llm_model, p_uq, overrides,
+                            framework_context: Optional[dict]   # new — carries integration metadata
 
 # Dynamic components
 RAGContextRetrievedEvent:       awa_job_id, sources: list[RAGSource]
@@ -666,7 +731,7 @@ PromptBuildFailedEvent: awa_consumer_id, awa_job_id, reason,
                         failed_component, on_timeout_applied
 ```
 
-### 11.3 Event Flows (Summary)
+### 11.4 Event Flows (Summary)
 
 | Flow | Scenario | Terminal event |
 |---|---|---|
@@ -678,7 +743,325 @@ PromptBuildFailedEvent: awa_consumer_id, awa_job_id, reason,
 
 ---
 
-## 12. Control Plane REST API
+## 12. Framework Integrations
+
+### 12.1 Design Principle
+
+The integration layer sits **outside** the core domain and service ring. It depends on `PromptBuilderService` via `IFrameworkAdapter`, not the reverse. All ten (now eleven) components, the job state machine, versioning, and context observation are completely unchanged. The integration layer is purely additive.
+
+```
+Core (unchanged):  domain/ → ports/ → services/
+Integration layer: integrations/ → depends on services/ via IFrameworkAdapter
+```
+
+### 12.2 IFrameworkAdapter Port
+
+```python
+class IFrameworkAdapter(ABC):
+    """Bidirectional bridge between a framework's state model and AWA's domain."""
+
+    @abstractmethod
+    async def build_from_framework_context(
+        self,
+        consumer_id: str,
+        job_id: str,
+        framework_context: dict[str, Any],
+        dynamic_overrides: dict[str, Any] | None = None,
+    ) -> BuiltPrompt: ...
+
+    @abstractmethod
+    def map_to_build_request(self, framework_state: Any) -> PromptBuildRequest: ...
+
+    @abstractmethod
+    def map_from_built_prompt(self, prompt: BuiltPrompt) -> Any: ...
+```
+
+Three concrete adapters implement this port: `LangGraphAdapter`, `SemanticKernelAdapter`, `CrewAIAdapter`.
+
+### 12.3 ContextBridgeService
+
+Maps each framework's state representation into AWA's internal types and back.
+
+| Framework | State In | AWA Request | State Out |
+|---|---|---|---|
+| LangGraph | `TypedDict` / Pydantic | `PromptBuildRequest` | State dict update (partial) |
+| Semantic Kernel | `KernelArguments` | `PromptBuildRequest` | `FunctionResult` |
+| CrewAI | Task context dict | `PromptBuildRequest` | Formatted string or `ChatResult` |
+
+```python
+class ContextBridgeService:
+    async def map_langgraph_state(self, state: dict, consumer_id: str) -> PromptBuildRequest: ...
+    async def map_sk_arguments(self, args: KernelArguments, consumer_id: str) -> PromptBuildRequest: ...
+    async def map_crewai_context(self, task_context: dict, consumer_id: str) -> PromptBuildRequest: ...
+    def map_built_prompt_to_state_update(self, prompt: BuiltPrompt, framework: str) -> Any: ...
+    async def inject_tools(self, section_map: SectionMap, tool_schemas: list[dict]) -> None: ...
+```
+
+### 12.4 LangGraph Integration
+
+AWA integrates with LangGraph at the **node** level. A `PromptBuilderNode` is a drop-in function node that receives the graph state, runs an AWA build, and returns a partial state update containing the formatted LLM payload.
+
+**AWAPromptState** (TypedDict):
+```python
+class AWAPromptState(TypedDict):
+    messages:         list[BaseMessage]
+    awa_consumer_id:  str
+    awa_job_id:       str
+    awa_built_prompt: Optional[LLMPayload]
+    awa_observation:  Optional[dict]
+    awa_build_error:  Optional[str]
+```
+
+**PromptBuilderNode** (graph node function):
+```python
+async def PromptBuilderNode(state: AWAPromptState) -> dict:
+    """Drop-in LangGraph node. Builds the AWA prompt and returns state update."""
+    adapter: LangGraphAdapter = container.langgraph_adapter()
+    prompt   = await adapter.build_from_framework_context(
+        consumer_id      = state["awa_consumer_id"],
+        job_id           = state["awa_job_id"],
+        framework_context= state,
+    )
+    return {"awa_built_prompt": prompt.payload, "awa_observation": prompt.observation_ref}
+```
+
+**PromptBuilderRunnable** — wraps `PromptBuilderNode` as a LangChain `Runnable` (`.invoke`, `.ainvoke`, `.stream`, `.astream`).
+
+**AWALangChainModel** — wraps any `ILLMAdapter` as a LangChain `BaseChatModel`:
+```python
+class AWALangChainModel(BaseChatModel):
+    """Makes any AWA ILLMAdapter usable as a LangChain model."""
+    _adapter: ILLMAdapter
+    def _generate(self, messages, stop=None, **kwargs) -> ChatResult: ...
+    async def _agenerate(self, messages, stop=None, **kwargs) -> ChatResult: ...
+```
+
+**Usage:**
+```python
+from awa_prompt_builder.integrations.langgraph import PromptBuilderNode, AWAPromptState
+
+graph = StateGraph(AWAPromptState)
+graph.add_node("build_prompt", PromptBuilderNode)
+graph.add_node("call_llm", your_llm_node)
+graph.add_edge("build_prompt", "call_llm")
+```
+
+**ID correlation:** `thread_id` from LangGraph's checkpointer maps to `AWA_Job_ID` via `IDCorrelationService`.
+
+**Memory context adapter:** `LangGraphCheckpointContextAdapter(IContextStore)` reads from the LangGraph checkpointer (SQLite / Redis / Postgres) to populate `p_agent_context`.
+
+### 12.5 Semantic Kernel Integration
+
+AWA integrates with Semantic Kernel at two levels: as a **Plugin** (explicit call) and as a **Filter** (transparent enrichment on every kernel function call).
+
+**PromptBuilderPlugin** (KernelPlugin — explicit call):
+```python
+class PromptBuilderPlugin:
+    @kernel_function(name="BuildPrompt", description="Assemble an AWA prompt for a use case")
+    async def build_prompt(
+        self,
+        consumer_id: Annotated[str, "AWA Consumer ID"],
+        user_query:  Annotated[str, "The user's query"],
+        kernel:      Kernel,
+    ) -> Annotated[str, "Formatted LLM-ready prompt"]: ...
+```
+
+**PromptEnrichmentFilter** (transparent — recommended for production):
+```python
+class PromptEnrichmentFilter(IFunctionInvocationFilter):
+    """Intercepts every kernel function call and enriches the prompt via AWA before execution."""
+    async def on_function_invocation(self, context: FunctionInvocationContext,
+                                     next: Callable) -> None:
+        # Build AWA prompt using KernelArguments as context
+        built = await self._adapter.build_from_framework_context(
+            consumer_id      = self._consumer_id,
+            job_id           = str(uuid4()),
+            framework_context= dict(context.arguments),
+        )
+        # Inject formatted prompt back into context arguments
+        context.arguments["system_prompt"] = built.payload.system_content
+        await next(context)
+```
+
+**AWAAIConnector** — wraps AWA's assembly + any `ILLMAdapter` as a Semantic Kernel AI service.
+
+**Usage:**
+```python
+from awa_prompt_builder.integrations.semantic_kernel import PromptEnrichmentFilter
+
+kernel.add_filter("function_invocation",
+                  PromptEnrichmentFilter(consumer_id="IDP_INVOICE_US"))
+# Every subsequent kernel.invoke() call is transparently AWA-enriched
+```
+
+**Memory context adapter:** `SKVectorMemoryContextAdapter(IContextStore)` reads from SK's vector memory stores to populate `p_agent_context`.
+
+### 12.6 CrewAI Integration
+
+AWA integrates with CrewAI at the **LLM wrapper** level (recommended) or as a **Tool**.
+
+**AWACrewLLM** (`BaseLLM` — recommended pattern):
+```python
+class AWACrewLLM(BaseLLM):
+    """
+    Wraps any underlying LLM provider. Before every model call,
+    runs AWA prompt assembly and replaces the raw messages with
+    the AWA-enriched, versioned, observed payload.
+    """
+    def __init__(self, base_model: str, consumer_id: str | None = None): ...
+
+    def call(self, messages: list[dict], stop: list[str] | None = None,
+             callbacks=None, **kwargs) -> str:
+        consumer_id = self._resolve_consumer(messages)
+        built       = self._adapter.build_sync(consumer_id, messages)
+        return self._underlying_llm.call(built.payload.as_messages(), stop, **kwargs)
+
+    async def acall(self, messages, stop=None, callbacks=None, **kwargs) -> str: ...
+    def _resolve_consumer(self, messages) -> str: ...    # uses IDCorrelationService
+```
+
+**PromptBuilderTool** (`BaseTool` — tool-mode for agent-driven builds):
+```python
+class PromptBuilderTool(BaseTool):
+    name:        str = "awa_prompt_builder"
+    description: str = "Assemble a versioned, guardrail-protected prompt for a use case"
+    def _run(self, consumer_id: str, user_query: str, **kwargs) -> str: ...
+    async def _arun(self, consumer_id: str, user_query: str, **kwargs) -> str: ...
+```
+
+**AWAAgentMixin** — maps `Agent.role` to `AWA_Consumer_ID` via `ConsumerResolutionStrategy`:
+```python
+class AWAAgentMixin:
+    """Mixin for CrewAI Agent subclasses. Maps agent.role → AWA_Consumer_ID."""
+    def get_awa_consumer_id(self) -> str:
+        return IDCorrelationService.resolve(
+            strategy=FrameworkIdentityStrategy,
+            identity=self.role,
+        )
+```
+
+**Usage (recommended — LLM wrapper):**
+```python
+from awa_prompt_builder.integrations.crewai import AWACrewLLM
+
+invoice_agent = Agent(
+    role     = "Invoice Processor",       # maps to AWA_Consumer_ID via ConfigMapStrategy
+    goal     = "Extract invoice fields",
+    backstory= "...",
+    llm      = AWACrewLLM(base_model="gpt-4o")
+)
+```
+
+**Memory context adapter:** `CrewAIMemoryContextAdapter(IContextStore)` reads from CrewAI's short-term, long-term, and entity memory stores to populate `p_agent_context`.
+
+### 12.7 p_tools — The 11th Component
+
+`p_tools` carries the JSON schemas of all tools registered with the orchestrating framework into the system message.
+
+| Property | Value |
+|---|---|
+| `ComponentType` | `ComponentType.P_TOOLS` |
+| Source | Injected by `ContextBridgeService.inject_tools()` at assembly time |
+| Placement | Always `system` |
+| Required | `false` — silently skipped if no framework context is present |
+| Token impact | Counted by `BloatDetector`; additional threshold: `p_tools > 20%` of system budget → WARN |
+| Versioning | Not versioned (framework-provided at job time, not stored in DB) |
+
+To enable per consumer, add the slot to `p_template`:
+```yaml
+slots:
+  - component: p_tools
+    enabled:   true
+    order:     2          # after p_guard, before p_act_bus
+    placement: system
+    required:  false
+```
+
+### 12.8 Consumer Resolution Strategy
+
+`IDCorrelationService` maps framework-native identities to `AWA_Consumer_ID` using a pluggable strategy:
+
+| Strategy | Resolution | When to use |
+|---|---|---|
+| `ExplicitStrategy` | `consumer_id` passed directly in the call | Full control; no mapping needed |
+| `FrameworkIdentityStrategy` | Derived from `Agent.role` / graph node name / plugin name | Framework identity cleanly maps to a use case |
+| `ConfigMapStrategy` | Config file (`consumer_id_map.yaml`) maps framework IDs → consumer IDs | M:1 mapping; many agents → one use case |
+
+```python
+class IDCorrelationService:
+    def resolve(strategy: ConsumerResolutionStrategy, identity: str) -> str: ...
+    def correlate_job_id(framework_execution_id: str) -> str: ...  # caches mapping in Redis
+```
+
+### 12.9 Memory Context Adapters
+
+All three implement `IContextStore` — the existing port used by `p_agent_context`. Zero changes to `SectionLoader` or `DynamicDependencyResolver`.
+
+```python
+class LangGraphCheckpointContextAdapter(IContextStore):
+    """Reads agent memory from LangGraph's checkpointer (SQLite/Redis/Postgres backend)."""
+    async def get_context(self, job_id: str) -> Optional[str]: ...
+
+class SKVectorMemoryContextAdapter(IContextStore):
+    """Reads from Semantic Kernel's vector memory (any SK-compatible vector store)."""
+    async def get_context(self, job_id: str) -> Optional[str]: ...
+
+class CrewAIMemoryContextAdapter(IContextStore):
+    """Reads from CrewAI's short-term, long-term, and entity memory."""
+    async def get_context(self, job_id: str) -> Optional[str]: ...
+```
+
+### 12.10 Framework Integration in Use Case Onboarding YAML
+
+Optional block added to `pb_use_case_onboarding.yaml` (and `pb_use_case_modify.yaml`):
+
+```yaml
+integrations:
+  deployment_mode: library          # service | library | hybrid
+
+  langgraph:
+    enabled: true
+    thread_id_as_job_id: true       # maps LangGraph thread_id → AWA_Job_ID
+    node_name: build_prompt         # name to register in the StateGraph
+    checkpoint_memory_for_agent_context: true
+
+  semantic_kernel:
+    enabled: true
+    plugin_name: PromptBuilder      # KernelPlugin registration name
+    attach_filter: true             # auto-register PromptEnrichmentFilter on kernel
+    sk_memory_for_agent_context: false
+
+  crewai:
+    enabled: true
+    mode: llm_wrapper               # llm_wrapper | tool (recommended: llm_wrapper)
+    agent_role_as_consumer_id: true # maps Agent.role → AWA_Consumer_ID
+    crewai_memory_for_agent_context: true
+
+  consumer_resolution:
+    strategy: config_map            # explicit | framework_identity | config_map
+    config_map_file: config/consumer_id_map.yaml
+```
+
+### 12.11 Composition Summary
+
+| Component | Status | Detail |
+|---|---|---|
+| `domain/` | ✅ Unchanged | `ComponentType.P_TOOLS` added as additive enum value |
+| `ports/` | ✅ Additive | `IFrameworkAdapter`, `IEventBus`, `IContextStore` added |
+| `PromptBuilderService` | ✅ Unchanged | Called by integration adapters via `IFrameworkAdapter` |
+| `SectionLoader` / `TemplateExecutor` | ✅ Unchanged | `p_tools` handled as a standard slot |
+| `VersionManagerService` | ✅ Unchanged | |
+| `ContextObserverService` | ✅ Unchanged | Observes `p_tools` token count like any section |
+| `ILLMAdapter` implementations | ✅ Additive | `as_langchain_model()` helper added; originals unchanged |
+| `KafkaEventPublisher/Consumer` | ✅ Unchanged | Wrapped as `KafkaEventBus(IEventBus)` |
+| DI Container | 🔧 Modified | Wires `IEventBus` based on `DEPLOYMENT_MODE`; integrations registered |
+| `adapters_registry.yaml` | 🔧 Extended | New `integrations:` section |
+| `pb_use_case_onboarding.yaml` | 🔧 Extended | Optional `integrations:` block |
+| `integrations/` package | 🆕 New | 14 new files — fully additive |
+
+---
+
+## 13. Control Plane REST API
 
 ```
 # Section flags
@@ -710,13 +1093,19 @@ GET   /api/v1/consumers/{id}/context-metrics
 GET   /api/v1/consumers/{id}/rot-alerts
 GET   /api/v1/consumers/{id}/bloat-alerts
 GET   /api/v1/consumers/{id}/timeout-stats
+
+# Integration management (new)
+GET   /api/v1/consumers/{id}/integrations
+PUT   /api/v1/consumers/{id}/integrations
+GET   /api/v1/consumers/{id}/integrations/consumer-map
+PUT   /api/v1/consumers/{id}/integrations/consumer-map
 ```
 
 All endpoints require JWT with RBAC claims. Rollback requires a separate TOTP confirmation token.
 
 ---
 
-## 13. pb-cli Reference
+## 14. pb-cli Reference
 
 Built with **Click**. Installed as console script `pb-cli`.
 
@@ -738,33 +1127,42 @@ pb-cli use-case list          [--env <env>]
 pb-cli use-case status        <consumer-id>
 pb-cli use-case validate      --config <yaml>
 pb-cli use-case validate-modify --config <yaml>
+
+# Integration commands (new)
+pb-cli integration enable     --consumer-id <id> --framework <langgraph|semantic_kernel|crewai>
+pb-cli integration disable    --consumer-id <id> --framework <framework>
+pb-cli integration test       --consumer-id <id> --framework <framework>
+pb-cli integration list       [--consumer-id <id>]
+pb-cli integration consumer-map set   --framework-id <id> --consumer-id <id>
+pb-cli integration consumer-map list
 ```
 
 All destructive commands follow: **validate → dry-run → apply**.
 
 ---
 
-## 14. Full Module & Class Reference
+## 15. Full Module & Class Reference
 
-### 14.1 Package Structure
+### 15.1 Package Structure
 
 ```
 awa_prompt_builder/
 ├── domain/
 │   ├── enums/
-│   │   ├── component_type.py       ComponentType
+│   │   ├── component_type.py       ComponentType (11 values incl. p_tools)
 │   │   ├── wait_strategy.py        WaitStrategy
 │   │   ├── on_timeout.py           OnTimeout
 │   │   ├── job_state.py            JobState
 │   │   ├── placement.py            Placement
-│   │   └── alert_severity.py       AlertSeverity
+│   │   ├── alert_severity.py       AlertSeverity
+│   │   └── deployment_mode.py      DeploymentMode
 │   └── models/
 │       ├── prompt_section.py       PromptSection, SectionMap, RAGSource
 │       ├── prompt_template.py      PromptTemplate, TemplateSlot, TokenBudget
 │       ├── job.py                  AWAJob, DynamicChecklist, ChecklistItem
 │       ├── consumer.py             AWAConsumer, DynamicDependencyConfig, ComponentDependencyConfig
 │       ├── observation.py          ObservationReport, ContextAlert, RotSignal, TokenBreakdown
-│       ├── events.py               BaseEvent + 7 concrete events
+│       ├── events.py               BaseEvent + 8 concrete events (incl. PromptBuildRequestedEvent.framework_context)
 │       ├── version.py              VersionRecord
 │       └── llm_payload.py          LLMPayload, LLMMessage, MessageRole
 │
@@ -773,6 +1171,7 @@ awa_prompt_builder/
 │   ├── template_repository.py      ITemplateRepository
 │   ├── consumer_repository.py      IConsumerRepository
 │   ├── job_state_repository.py     IJobStateRepository
+│   ├── event_bus.py                IEventBus                      ← new
 │   ├── event_publisher.py          IEventPublisher
 │   ├── llm_adapter.py              ILLMAdapter
 │   ├── context_observer.py         IContextObserver
@@ -780,7 +1179,9 @@ awa_prompt_builder/
 │   ├── timer_service.py            ITimerService
 │   ├── audit_log.py                IAuditLog
 │   ├── token_counter.py            ITokenCounter
-│   └── embedding_client.py         IEmbeddingClient
+│   ├── embedding_client.py         IEmbeddingClient
+│   ├── context_store.py            IContextStore                  ← new (p_agent_context source)
+│   └── framework_adapter.py        IFrameworkAdapter              ← new
 │
 ├── services/
 │   ├── prompt_builder_service.py   PromptBuilderService
@@ -798,6 +1199,8 @@ awa_prompt_builder/
 │   │   ├── postgres_consumer_repo.py   PostgresConsumerRepository
 │   │   └── redis_job_state_repo.py     RedisJobStateRepository
 │   ├── messaging/
+│   │   ├── kafka_event_bus.py          KafkaEventBus              ← new (wraps aiokafka)
+│   │   ├── inprocess_event_bus.py      InProcessEventBus          ← new (asyncio.Queue)
 │   │   ├── kafka_publisher.py          KafkaEventPublisher
 │   │   ├── kafka_consumer.py           KafkaEventConsumer
 │   │   ├── rabbitmq_publisher.py       RabbitMQEventPublisher  [generated]
@@ -810,6 +1213,7 @@ awa_prompt_builder/
 │   └── llm/
 │       ├── base.py                     BaseLLMAdapter
 │       ├── registry.py                 LLMAdapterRegistry
+│       ├── langchain_wrapper.py        AWALangChainModel          ← new
 │       ├── openai_adapter.py           OpenAIAdapter
 │       ├── anthropic_adapter.py        AnthropicAdapter
 │       ├── gemini_adapter.py           GeminiAdapter
@@ -829,14 +1233,41 @@ awa_prompt_builder/
 │   ├── schemas/
 │   │   ├── adapter_onboard_schema.py   AdapterOnboardSchema + sub-schemas
 │   │   ├── adapter_modify_schema.py    AdapterModifySchema + sub-schemas
-│   │   ├── use_case_schema.py          UseCaseOnboardSchema + sub-schemas
+│   │   ├── use_case_schema.py          UseCaseOnboardSchema + sub-schemas (incl. IntegrationsBlock)
 │   │   └── use_case_modify_schema.py   UseCaseModifySchema + sub-schemas
 │   ├── adapter_scaffold_generator.py   AdapterScaffoldGenerator
 │   ├── adapter_registry_loader.py      AdapterRegistryLoader
 │   ├── adapter_modification_service.py AdapterModificationService
 │   ├── use_case_onboarding_service.py  UseCaseOnboardingService
 │   ├── use_case_modification_service.py UseCaseModificationService
-│   └── cli.py                          pb-cli Click application
+│   └── cli.py                          pb-cli Click application (incl. integration commands)
+│
+├── integrations/                       ← new package (all additive)
+│   ├── base.py                         IFrameworkAdapter (re-export), BuiltPrompt
+│   ├── context_bridge.py               ContextBridgeService
+│   ├── id_correlation.py               IDCorrelationService, ConsumerResolutionStrategy
+│   │                                   ExplicitStrategy, FrameworkIdentityStrategy, ConfigMapStrategy
+│   ├── langgraph/
+│   │   ├── __init__.py
+│   │   ├── adapter.py                  LangGraphAdapter(IFrameworkAdapter)
+│   │   ├── node.py                     PromptBuilderNode (graph node function)
+│   │   ├── runnable.py                 PromptBuilderRunnable (LangChain Runnable)
+│   │   ├── state.py                    AWAPromptState TypedDict
+│   │   └── checkpoint_context.py       LangGraphCheckpointContextAdapter(IContextStore)
+│   ├── semantic_kernel/
+│   │   ├── __init__.py
+│   │   ├── adapter.py                  SemanticKernelAdapter(IFrameworkAdapter)
+│   │   ├── plugin.py                   PromptBuilderPlugin (KernelPlugin)
+│   │   ├── filter.py                   PromptEnrichmentFilter (IFunctionInvocationFilter)
+│   │   ├── connector.py                AWAAIConnector (SK AI service wrapper)
+│   │   └── memory_context.py           SKVectorMemoryContextAdapter(IContextStore)
+│   └── crewai/
+│       ├── __init__.py
+│       ├── adapter.py                  CrewAIAdapter(IFrameworkAdapter)
+│       ├── llm.py                      AWACrewLLM (BaseLLM wrapper)
+│       ├── tool.py                     PromptBuilderTool (BaseTool)
+│       ├── agent_mixin.py              AWAAgentMixin
+│       └── memory_context.py           CrewAIMemoryContextAdapter(IContextStore)
 │
 ├── api/
 │   ├── routers/
@@ -845,7 +1276,8 @@ awa_prompt_builder/
 │   │   ├── consumers.py
 │   │   ├── dynamic_config.py
 │   │   ├── jobs.py
-│   │   └── observation.py
+│   │   ├── observation.py
+│   │   └── integrations.py            ← new router
 │   └── middleware/auth.py
 │
 └── infrastructure/
@@ -853,21 +1285,20 @@ awa_prompt_builder/
     ├── redis_client.py                 Redis connection pool
     ├── timer_service.py                RedisTimerService (implements ITimerService)
     ├── s3_snapshot_store.py            S3SnapshotStore (implements ISnapshotStore)
-    └── container.py                    dependency-injector DI container
+    └── container.py                    DI container (wires IEventBus by DEPLOYMENT_MODE;
+                                        registers integration adapters when enabled)
 ```
 
-### 14.2 All Classes and Key Methods
+### 15.2 All Classes and Key Methods
 
 #### Services
 
 ```python
 class PromptBuilderService:
-    # entry points (called by event handlers)
     async def handle_build_requested(event: PromptBuildRequestedEvent) -> None
     async def handle_rag_context_retrieved(event: RAGContextRetrievedEvent) -> None
     async def handle_agent_context_ready(event: AgentContextReadyEvent) -> None
     async def handle_dynamic_timeout(event: DynamicComponentTimeoutEvent) -> None
-    # internal
     async def _initialise_job(event) -> AWAJob
     async def _attempt_assembly(job: AWAJob) -> None
     async def _assemble_and_publish(job: AWAJob) -> None
@@ -877,7 +1308,7 @@ class PromptBuilderService:
 class SectionLoader:
     async def load_static_sections(consumer_id, template) -> SectionMap
     async def load_section(consumer_id, component) -> Optional[PromptSection]
-    async def resolve_version(consumer_id, component) -> str   # Chain of Responsibility
+    async def resolve_version(consumer_id, component) -> str
     def _verify_checksum(section) -> bool
 
 class DynamicDependencyResolver:
@@ -908,13 +1339,14 @@ class BloatDetector:
     def _total_utilization_alert(used, limit) -> Optional[ContextAlert]
     def _section_dominance_alert(section_map, total) -> Optional[ContextAlert]
     def _rag_overflow_alert(sources, limit) -> Optional[ContextAlert]
+    def _tools_bloat_alert(tools_tokens, system_total) -> Optional[ContextAlert]  # new
 
 class RotDetector:
     async def detect(section_map, p_uq) -> list[RotSignal]
     def _staleness_signal(section) -> Optional[RotSignal]
     async def _semantic_drift_signal(section, p_uq) -> Optional[RotSignal]
 
-class ContextObserverService:   # implements IContextObserver
+class ContextObserverService:
     async def observe(section_map, job, template) -> ObservationReport
     async def _check_bloat(section_map, context_limit) -> list[ContextAlert]
     async def _check_rot(section_map, p_uq) -> list[RotSignal]
@@ -931,7 +1363,60 @@ class VersionManagerService:
     def _bump_version(current, change_type) -> str
 ```
 
-#### Onboarding & Modification
+#### Integration Layer
+
+```python
+class ContextBridgeService:
+    async def map_langgraph_state(state: dict, consumer_id: str) -> PromptBuildRequest
+    async def map_sk_arguments(args, consumer_id: str) -> PromptBuildRequest
+    async def map_crewai_context(task_context: dict, consumer_id: str) -> PromptBuildRequest
+    def map_built_prompt_to_state_update(prompt: BuiltPrompt, framework: str) -> Any
+    async def inject_tools(section_map: SectionMap, tool_schemas: list[dict]) -> None
+
+class IDCorrelationService:
+    def resolve(strategy: ConsumerResolutionStrategy, identity: str) -> str
+    def correlate_job_id(framework_execution_id: str) -> str
+    def load_config_map(path: str) -> dict[str, str]
+
+class LangGraphAdapter(IFrameworkAdapter):
+    async def build_from_framework_context(consumer_id, job_id, framework_context, overrides) -> BuiltPrompt
+    def map_to_build_request(state: AWAPromptState) -> PromptBuildRequest
+    def map_from_built_prompt(prompt: BuiltPrompt) -> dict           # partial state update
+
+class SemanticKernelAdapter(IFrameworkAdapter):
+    async def build_from_framework_context(consumer_id, job_id, framework_context, overrides) -> BuiltPrompt
+    def map_to_build_request(args: KernelArguments) -> PromptBuildRequest
+    def map_from_built_prompt(prompt: BuiltPrompt) -> FunctionResult
+
+class CrewAIAdapter(IFrameworkAdapter):
+    async def build_from_framework_context(consumer_id, job_id, framework_context, overrides) -> BuiltPrompt
+    def map_to_build_request(task_context: dict) -> PromptBuildRequest
+    def map_from_built_prompt(prompt: BuiltPrompt) -> str
+
+class AWALangChainModel(BaseChatModel):
+    _adapter: ILLMAdapter
+    def _generate(messages, stop, **kwargs) -> ChatResult
+    async def _agenerate(messages, stop, **kwargs) -> ChatResult
+    @property def _llm_type(self) -> str
+
+class AWACrewLLM(BaseLLM):
+    def call(messages, stop, callbacks, **kwargs) -> str
+    async def acall(messages, stop, callbacks, **kwargs) -> str
+    def _resolve_consumer(messages) -> str
+    def build_sync(consumer_id, messages) -> BuiltPrompt
+
+class PromptEnrichmentFilter:
+    async def on_function_invocation(context: FunctionInvocationContext, next: Callable) -> None
+
+class PromptBuilderNode:          # function, not class — signature shown
+    # async def __call__(state: AWAPromptState) -> dict
+
+class PromptBuilderTool(BaseTool):
+    def _run(consumer_id, user_query, **kwargs) -> str
+    async def _arun(consumer_id, user_query, **kwargs) -> str
+```
+
+#### Onboarding & Modification (unchanged from v2.0.0)
 
 ```python
 class AdapterScaffoldGenerator:
@@ -940,26 +1425,6 @@ class AdapterScaffoldGenerator:
     def _render_adapter_class(schema, output_dir) -> Path
     def _render_test_class(schema) -> Path
     def _update_registry(schema) -> None
-    def _determine_template(adapter_type) -> str
-    def _build_template_context(schema) -> dict
-
-class AdapterRegistryLoader:
-    def load_all() -> list[AdapterRegistryEntry]
-    def load_enabled() -> list[AdapterRegistryEntry]
-    def register_llm_adapters(registry: LLMAdapterRegistry) -> None
-    def register_messaging_adapters(container) -> None
-    def add_entry(entry) -> None
-    def set_enabled(name, enabled) -> None
-    def _dynamic_import(class_path) -> type
-
-class AdapterModificationService:
-    CODE_AFFECTING_FIELDS: frozenset
-    def modify(schema, output_dir, regenerate) -> AdapterModificationResult
-    def dry_run(schema) -> list[ChangePreview]
-    def _compute_diff(current, schema) -> list[ChangeRecord]
-    def _apply_registry_changes(name, changes, new_version) -> None
-    def _requires_code_change(changes) -> bool
-    def _regenerate_class(name, output_dir) -> Path
 
 class UseCaseOnboardingService:
     async def onboard(schema, env) -> OnboardingResult
@@ -969,7 +1434,7 @@ class UseCaseOnboardingService:
     async def _write_rollback_snapshot(consumer_id) -> str
 
 class UseCaseModificationService:
-    _BLOCK_HANDLERS: dict[str, str]   # block name → handler method name
+    _BLOCK_HANDLERS: dict[str, str]
     async def modify(schema, env) -> UseCaseModificationResult
     async def dry_run(schema, env) -> list[ChangePreview]
     async def _apply_llm_change(consumer_id, changes) -> UseCaseChangeRecord
@@ -978,47 +1443,16 @@ class UseCaseModificationService:
     async def _apply_section_changes(consumer_id, sections) -> list[UseCaseChangeRecord]
     async def _apply_version_pin_change(consumer_id, pins) -> UseCaseChangeRecord
     async def _apply_threshold_change(consumer_id, changes) -> UseCaseChangeRecord
+    async def _apply_integration_change(consumer_id, changes) -> UseCaseChangeRecord   # new
     async def _merge_template_slots(current, changes) -> list[TemplateSlot]
     async def _write_rollback_snapshot(consumer_id) -> str
 ```
 
-#### Adapters & Handlers
-
-```python
-class BaseLLMAdapter:             # implements ILLMAdapter (abstract)
-    def _wrap_in_xml(tag, content) -> str
-    def _split_by_placement(template, section_map) -> tuple[str, str]
-    def _format_rag_sources(sources) -> str
-
-class LLMAdapterRegistry:
-    def register(adapter) -> None
-    def get(model) -> ILLMAdapter
-    def get_by_family(family) -> ILLMAdapter
-    def supported_models() -> list[str]
-
-# All concrete adapters implement:
-class XxxAdapter(BaseLLMAdapter):
-    model_family: str;  context_window: int
-    SUPPORTED_MODELS: list[str]
-    def format(section_map, template) -> LLMPayload
-    def estimate_tokens(content) -> int
-
-class BaseEventHandler:           # abstract
-    async def handle(event) -> None   # abstract
-    async def safe_handle(event) -> None   # Template Method
-    async def _validate(event) -> bool
-    async def _on_error(event, exc) -> None
-
-# All concrete handlers:
-class XxxHandler(BaseEventHandler):
-    async def handle(event) -> None
-```
-
 ---
 
-## 15. UML Diagrams
+## 16. UML Diagrams
 
-### 15.1 Domain Model
+### 16.1 Domain Model
 
 ```mermaid
 classDiagram
@@ -1050,6 +1484,7 @@ classDiagram
         +p_uq str
         +state JobState
         +overrides dict
+        +framework_context dict
     }
     class DynamicChecklist {
         +is_complete() bool
@@ -1089,6 +1524,7 @@ classDiagram
     class SectionMap {
         +add(component, section) None
         +add_rag_sources(sources) None
+        +add_tools(schemas) None
         +get(component) PromptSection
         +enabled_sections() list
         +total_tokens() int
@@ -1119,7 +1555,7 @@ classDiagram
     AWAJob --> AWAConsumer : belongs to
 ```
 
-### 15.2 Core Services and Ports
+### 16.2 Core Services and Ports
 
 ```mermaid
 classDiagram
@@ -1131,6 +1567,14 @@ classDiagram
         +context_window int
         +format(section_map, template) LLMPayload
         +estimate_tokens(content) int
+        +as_langchain_model() AWALangChainModel
+    }
+    class IEventBus {
+        <<interface>>
+        +publish(topic, event) None
+        +subscribe(topic, handler) None
+        +start() None
+        +stop() None
     }
     class ISectionRepository {
         <<interface>>
@@ -1146,25 +1590,15 @@ classDiagram
         +update_state(job_id, state) None
         +update_checklist(job_id, checklist) None
     }
-    class IConsumerRepository {
-        <<interface>>
-        +get(consumer_id) AWAConsumer
-        +get_dynamic_config(consumer_id) DynamicDependencyConfig
-        +save_dynamic_config(config) None
-    }
-    class IEventPublisher {
-        <<interface>>
-        +publish(topic, event) None
-        +publish_batch(topic, events) None
-    }
     class IContextObserver {
         <<interface>>
         +observe(section_map, job, template) ObservationReport
     }
-    class ITimerService {
+    class IFrameworkAdapter {
         <<interface>>
-        +schedule(delay_ms, event, topic) str
-        +cancel(timer_id) None
+        +build_from_framework_context(consumer_id, job_id, ctx, overrides) BuiltPrompt
+        +map_to_build_request(framework_state) PromptBuildRequest
+        +map_from_built_prompt(prompt) Any
     }
 
     class PromptBuilderService {
@@ -1174,7 +1608,7 @@ classDiagram
         -template_executor TemplateExecutor
         -adapter_registry LLMAdapterRegistry
         -context_observer IContextObserver
-        -event_publisher IEventPublisher
+        -event_bus IEventBus
         +handle_build_requested(event) None
         +handle_rag_context_retrieved(event) None
         +handle_agent_context_ready(event) None
@@ -1185,52 +1619,40 @@ classDiagram
         +resolve_version(consumer_id, component) str
         -_verify_checksum(section) bool
     }
-    class DynamicDependencyResolver {
-        +build_checklist(job) DynamicChecklist
-        +apply_job_overrides(base_config, overrides) DynamicDependencyConfig
-    }
     class JobStateMachine {
         -_TRANSITIONS frozenset
         +initiate(job, checklist) JobState
         +mark_component_received(job_id, component) JobState
-        +mark_component_timed_out(job_id, component) JobState
         +mark_built(job_id) None
         +mark_failed(job_id, reason) None
-        -_can_transition(current, target) bool
     }
     class TemplateExecutor {
         +execute(template, section_map, dynamic_config) SectionMap
         -_should_include_slot(slot, section_map, dynamic_config) bool
         -_apply_token_budget(section_map, budget) SectionMap
     }
-    class LLMAdapterRegistry {
-        +register(adapter) None
-        +get(model) ILLMAdapter
-        +get_by_family(family) ILLMAdapter
+    class KafkaEventBus {
+        +publish(topic, event) None
+        +subscribe(topic, handler) None
     }
-    class ContextObserverService {
-        +observe(section_map, job, template) ObservationReport
+    class InProcessEventBus {
+        +publish(topic, event) None
+        +subscribe(topic, handler) None
     }
 
     PromptBuilderService --> SectionLoader
-    PromptBuilderService --> DynamicDependencyResolver
     PromptBuilderService --> JobStateMachine
     PromptBuilderService --> TemplateExecutor
-    PromptBuilderService --> LLMAdapterRegistry
     PromptBuilderService --> IContextObserver
-    PromptBuilderService --> IEventPublisher
-
+    PromptBuilderService --> IEventBus
     SectionLoader --> ISectionRepository
-    SectionLoader --> IConsumerRepository
-    DynamicDependencyResolver --> IConsumerRepository
     JobStateMachine --> IJobStateRepository
-    JobStateMachine --> IEventPublisher
-    JobStateMachine --> ITimerService
-    LLMAdapterRegistry --> ILLMAdapter
-    ContextObserverService ..|> IContextObserver
+    KafkaEventBus ..|> IEventBus
+    InProcessEventBus ..|> IEventBus
+    IFrameworkAdapter --> PromptBuilderService : calls
 ```
 
-### 15.3 LLM Adapter Hierarchy
+### 16.3 LLM Adapter Hierarchy
 
 ```mermaid
 classDiagram
@@ -1242,47 +1664,28 @@ classDiagram
         +context_window int
         +format(section_map, template) LLMPayload
         +estimate_tokens(content) int
+        +as_langchain_model() AWALangChainModel
     }
     class BaseLLMAdapter {
         <<abstract>>
         #_wrap_in_xml(tag, content) str
         #_split_by_placement(template, section_map) tuple
         #_format_rag_sources(sources) str
+        #_format_tools(schemas) str
     }
-    class OpenAIAdapter {
-        +model_family = "openai"
-        +context_window = 128000
-        +format(section_map, template) LLMPayload
-        +estimate_tokens(content) int
+    class AWALangChainModel {
+        +_adapter ILLMAdapter
+        +_generate(messages, stop) ChatResult
+        +_agenerate(messages, stop) ChatResult
+        +_llm_type str
     }
-    class AnthropicAdapter {
-        +model_family = "anthropic"
-        +context_window = 200000
-        +format(section_map, template) LLMPayload
-        +estimate_tokens(content) int
-    }
-    class GeminiAdapter {
-        +model_family = "gemini"
-        +context_window = 1000000
-        +format(section_map, template) LLMPayload
-        +estimate_tokens(content) int
-    }
-    class LlamaAdapter {
-        +model_family = "llama"
-        +context_window = 131072
-    }
-    class MistralAdapter {
-        +model_family = "mistral"
-        +context_window = 32768
-    }
-    class BedrockAdapter {
-        +model_family = "bedrock"
-        +context_window = 200000
-    }
-    class CompassCore42Adapter {
-        +model_family = "compass_core42"
-        +context_window = 131072
-    }
+    class OpenAIAdapter { +model_family = "openai"; +context_window = 128000 }
+    class AnthropicAdapter { +model_family = "anthropic"; +context_window = 200000 }
+    class GeminiAdapter { +model_family = "gemini"; +context_window = 1000000 }
+    class LlamaAdapter { +model_family = "llama"; +context_window = 131072 }
+    class MistralAdapter { +model_family = "mistral"; +context_window = 32768 }
+    class BedrockAdapter { +model_family = "bedrock"; +context_window = 200000 }
+    class CompassCore42Adapter { +model_family = "compass_core42"; +context_window = 131072 }
 
     ILLMAdapter <|.. BaseLLMAdapter
     BaseLLMAdapter <|-- OpenAIAdapter
@@ -1292,9 +1695,10 @@ classDiagram
     BaseLLMAdapter <|-- MistralAdapter
     BaseLLMAdapter <|-- BedrockAdapter
     BaseLLMAdapter <|-- CompassCore42Adapter
+    BaseLLMAdapter ..> AWALangChainModel : creates via as_langchain_model()
 ```
 
-### 15.4 Event Handlers and Kafka Infrastructure
+### 16.4 Event Handlers and Event Bus Infrastructure
 
 ```mermaid
 classDiagram
@@ -1307,84 +1711,60 @@ classDiagram
         #_validate(event) bool
         #_on_error(event, exc) None
     }
-    class PromptBuildRequestedHandler {
-        -builder_service PromptBuilderService
-        +handle(event) None
-    }
-    class RAGContextRetrievedHandler {
-        -builder_service PromptBuilderService
-        +handle(event) None
-    }
-    class AgentContextReadyHandler {
-        -builder_service PromptBuilderService
-        +handle(event) None
-    }
-    class DynamicComponentTimeoutHandler {
-        -builder_service PromptBuilderService
-        +handle(event) None
-    }
-    class KafkaEventConsumer {
-        -consumer AIOKafkaConsumer
-        -handler_map dict
+    class PromptBuildRequestedHandler { +handle(event) None }
+    class RAGContextRetrievedHandler  { +handle(event) None }
+    class AgentContextReadyHandler    { +handle(event) None }
+    class DynamicComponentTimeoutHandler { +handle(event) None }
+
+    class IEventBus {
+        <<interface>>
+        +publish(topic, event) None
+        +subscribe(topic, handler) None
         +start() None
         +stop() None
+    }
+    class KafkaEventBus {
+        -producer AIOKafkaProducer
+        -consumer AIOKafkaConsumer
+        -handler_map dict
+        +publish(topic, event) None
+        +subscribe(topic, handler) None
         -_dispatch(raw_message) None
     }
-    class KafkaEventPublisher {
-        -producer AIOKafkaProducer
+    class InProcessEventBus {
+        -queues dict[str, asyncio.Queue]
+        -handlers dict[str, list[Callable]]
         +publish(topic, event) None
-        +publish_batch(topic, events) None
+        +subscribe(topic, handler) None
     }
 
     BaseEventHandler <|-- PromptBuildRequestedHandler
     BaseEventHandler <|-- RAGContextRetrievedHandler
     BaseEventHandler <|-- AgentContextReadyHandler
     BaseEventHandler <|-- DynamicComponentTimeoutHandler
-    KafkaEventConsumer --> BaseEventHandler : dispatches to
-    KafkaEventPublisher ..|> IEventPublisher
+    KafkaEventBus ..|> IEventBus
+    InProcessEventBus ..|> IEventBus
+    IEventBus --> BaseEventHandler : dispatches to handlers
 ```
 
-### 15.5 Onboarding and Modification Framework
+### 16.5 Onboarding and Modification Framework
 
 ```mermaid
 classDiagram
     direction TB
 
-    class AdapterOnboardSchema {
-        +adapter AdapterEntry
-    }
-    class AdapterEntry {
-        +name str
-        +adapter_type AdapterType
-        +llm LLMAdapterConfig
-        +messaging MessagingAdapterConfig
-        +scaffold ScaffoldConfig
-        +class_name str
-        +is_code_affecting() bool
-    }
     class AdapterScaffoldGenerator {
         +generate(schema, output_dir) ScaffoldResult
         +dry_run(schema, output_dir) ScaffoldResult
         -_render_adapter_class(schema, output_dir) Path
         -_render_test_class(schema) Path
         -_update_registry(schema) None
-        -_determine_template(adapter_type) str
     }
     class AdapterRegistryLoader {
         +load_enabled() list
         +register_llm_adapters(registry) None
         +add_entry(entry) None
         +set_enabled(name, enabled) None
-        -_dynamic_import(class_path) type
-    }
-    class AdapterModifySchema {
-        +adapter_modify AdapterModifyEntry
-    }
-    class AdapterModifyEntry {
-        +name str
-        +new_version str
-        +has_any_change() bool
-        +is_code_affecting() bool
     }
     class AdapterModificationService {
         +CODE_AFFECTING_FIELDS frozenset
@@ -1393,49 +1773,29 @@ classDiagram
         -_compute_diff(current, schema) list
         -_requires_code_change(changes) bool
     }
-    class UseCaseOnboardSchema {
-        +use_case UseCaseEntry
-    }
     class UseCaseOnboardingService {
         +onboard(schema, env) OnboardingResult
         +rollback(consumer_id, rollback_ref) None
         +validate_only(schema) list
     }
-    class UseCaseModifySchema {
-        +use_case_modify UseCaseModifyEntry
-    }
-    class UseCaseModifyEntry {
-        +awa_consumer_id str
-        +active_change_blocks() list
-    }
     class UseCaseModificationService {
         +_BLOCK_HANDLERS dict
         +modify(schema, env) UseCaseModificationResult
         +dry_run(schema, env) list
-        -_apply_llm_change(consumer_id, changes) UseCaseChangeRecord
-        -_apply_dynamic_config_change(consumer_id, changes) UseCaseChangeRecord
-        -_apply_template_change(consumer_id, changes) UseCaseChangeRecord
-        -_apply_section_changes(consumer_id, sections) list
+        -_apply_integration_change(consumer_id, changes) UseCaseChangeRecord
         -_merge_template_slots(current, changes) list
     }
 
-    AdapterOnboardSchema --> AdapterEntry
-    AdapterScaffoldGenerator --> AdapterOnboardSchema
-    AdapterRegistryLoader --> AdapterScaffoldGenerator : feeds generated path
-    AdapterModifySchema --> AdapterModifyEntry
-    AdapterModificationService --> AdapterModifySchema
+    AdapterScaffoldGenerator --> AdapterRegistryLoader : feeds generated path
     AdapterModificationService --> AdapterRegistryLoader
-    UseCaseOnboardSchema --> UseCaseOnboardingService
-    UseCaseModifySchema --> UseCaseModifyEntry
-    UseCaseModificationService --> UseCaseModifySchema
     UseCaseModificationService --> VersionManagerService : delegates section versioning
 ```
 
-### 15.6 Job State Machine
+### 16.6 Job State Machine
 
 ```mermaid
 stateDiagram-v2
-    [*] --> INITIATED : PromptBuildRequested received
+    [*] --> INITIATED : PromptBuildRequested received\n(via IEventBus)
 
     INITIATED --> AWAITING_DYNAMIC : checklist non-empty\n(timers scheduled)
     INITIATED --> READY_TO_ASSEMBLE : checklist empty\n(no dynamic components)
@@ -1443,20 +1803,20 @@ stateDiagram-v2
     AWAITING_DYNAMIC --> READY_TO_ASSEMBLE : all items received\nOR timed out with PROCEED_WITHOUT
     AWAITING_DYNAMIC --> FAILED : any REQUIRED item\ntimed out with FAIL
 
-    READY_TO_ASSEMBLE --> ASSEMBLING : load sections + format
+    READY_TO_ASSEMBLE --> ASSEMBLING : load sections + inject p_tools + format
 
-    ASSEMBLING --> BUILT : PromptBuilt published
+    ASSEMBLING --> BUILT : PromptBuilt published (via IEventBus)
     ASSEMBLING --> FAILED : Context Observer BLOCK\nor assembly error
 
     BUILT --> [*]
     FAILED --> [*]
 ```
 
-### 15.7 RAG Happy Path Sequence
+### 16.7 RAG Happy Path Sequence
 
 ```mermaid
 sequenceDiagram
-    participant C  as Caller
+    participant C  as Caller (or Framework Adapter)
     participant PB as Prompt Builder
     participant R  as Redis
     participant T  as Timer Service
@@ -1464,7 +1824,7 @@ sequenceDiagram
     participant CO as Context Observer
     participant LA as LLM Adapter
 
-    C  ->> PB : PromptBuildRequested (job_abc)
+    C  ->> PB : PromptBuildRequested (job_abc) [via IEventBus]
     PB ->> R  : persist checklist {p_rag: pending}
     PB ->> T  : schedule timeout (5000ms, job_abc, p_rag)
     Note over PB: state = AWAITING_DYNAMIC
@@ -1473,65 +1833,138 @@ sequenceDiagram
     PB ->> R  : mark p_rag_context_n received
     Note over PB: checklist complete → READY_TO_ASSEMBLE
 
-    PB ->> PB : load static sections + merge RAG + p_uq
+    PB ->> PB : load static sections + merge RAG + p_uq + p_tools
     PB ->> T  : cancel timeout timer
     PB ->> CO : observe(section_map, job, template)
     CO -->> PB : ObservationReport (no alerts)
     PB ->> LA : format(section_map, template)
     LA -->> PB : LLMPayload
-    PB ->> C  : PromptBuilt
+    PB ->> C  : PromptBuilt [via IEventBus]
+```
+
+### 16.8 Framework Integration Layer
+
+```mermaid
+classDiagram
+    direction TB
+
+    class IFrameworkAdapter {
+        <<interface>>
+        +build_from_framework_context(consumer_id, job_id, ctx, overrides) BuiltPrompt
+        +map_to_build_request(framework_state) PromptBuildRequest
+        +map_from_built_prompt(prompt) Any
+    }
+    class LangGraphAdapter {
+        +build_from_framework_context(...) BuiltPrompt
+        +map_to_build_request(AWAPromptState) PromptBuildRequest
+        +map_from_built_prompt(prompt) dict
+    }
+    class SemanticKernelAdapter {
+        +build_from_framework_context(...) BuiltPrompt
+        +map_to_build_request(KernelArguments) PromptBuildRequest
+        +map_from_built_prompt(prompt) FunctionResult
+    }
+    class CrewAIAdapter {
+        +build_from_framework_context(...) BuiltPrompt
+        +map_to_build_request(task_context) PromptBuildRequest
+        +map_from_built_prompt(prompt) str
+    }
+
+    class ContextBridgeService {
+        +map_langgraph_state(state, consumer_id) PromptBuildRequest
+        +map_sk_arguments(args, consumer_id) PromptBuildRequest
+        +map_crewai_context(ctx, consumer_id) PromptBuildRequest
+        +inject_tools(section_map, tool_schemas) None
+    }
+    class IDCorrelationService {
+        +resolve(strategy, identity) str
+        +correlate_job_id(framework_execution_id) str
+    }
+    class ConsumerResolutionStrategy { <<interface>> }
+    class ExplicitStrategy { +resolve(identity) str }
+    class FrameworkIdentityStrategy { +resolve(identity) str }
+    class ConfigMapStrategy { +resolve(identity) str; -_map dict }
+
+    class IContextStore {
+        <<interface>>
+        +get_context(job_id) Optional[str]
+    }
+    class LangGraphCheckpointContextAdapter { +get_context(job_id) Optional[str] }
+    class SKVectorMemoryContextAdapter { +get_context(job_id) Optional[str] }
+    class CrewAIMemoryContextAdapter { +get_context(job_id) Optional[str] }
+
+    class AWACrewLLM { +call(messages, stop) str; +acall(...) str }
+    class PromptEnrichmentFilter { +on_function_invocation(ctx, next) None }
+    class PromptBuilderPlugin { +build_prompt(consumer_id, user_query, kernel) str }
+    class PromptBuilderTool { +_run(consumer_id, user_query) str }
+
+    IFrameworkAdapter <|.. LangGraphAdapter
+    IFrameworkAdapter <|.. SemanticKernelAdapter
+    IFrameworkAdapter <|.. CrewAIAdapter
+    LangGraphAdapter --> ContextBridgeService
+    SemanticKernelAdapter --> ContextBridgeService
+    CrewAIAdapter --> ContextBridgeService
+    IDCorrelationService --> ConsumerResolutionStrategy
+    ConsumerResolutionStrategy <|.. ExplicitStrategy
+    ConsumerResolutionStrategy <|.. FrameworkIdentityStrategy
+    ConsumerResolutionStrategy <|.. ConfigMapStrategy
+    IContextStore <|.. LangGraphCheckpointContextAdapter
+    IContextStore <|.. SKVectorMemoryContextAdapter
+    IContextStore <|.. CrewAIMemoryContextAdapter
+    SemanticKernelAdapter --> PromptEnrichmentFilter
+    SemanticKernelAdapter --> PromptBuilderPlugin
+    CrewAIAdapter --> AWACrewLLM
+    CrewAIAdapter --> PromptBuilderTool
 ```
 
 ---
 
-## 16. Design Patterns
+## 17. Design Patterns
 
-### 16.1 Strategy — LLM Adapters
+### 17.1 Strategy — LLM Adapters
 
-**Problem:** Different LLMs require fundamentally different prompt formats. The builder must not contain LLM-specific conditionals.
+**Problem:** Different LLMs require fundamentally different prompt formats.
 
-**Solution:** `ILLMAdapter` is the strategy interface. `LLMAdapterRegistry.get(model)` selects the correct strategy at runtime.
+**Solution:** `ILLMAdapter` is the strategy interface. `LLMAdapterRegistry.get(model)` selects the correct strategy at runtime. `AWALangChainModel` wraps any strategy as a LangChain `BaseChatModel` so the same strategies are reusable inside LangGraph and CrewAI without duplication.
 
 ```python
-# Adding a new LLM needs zero changes in PromptBuilderService:
 class MyNewLLMAdapter(BaseLLMAdapter):
     model_family = "my_new_llm"
     context_window = 256_000
     def format(self, section_map, template) -> LLMPayload: ...
     def estimate_tokens(self, content) -> int: ...
+    # Automatically available as AWALangChainModel via as_langchain_model()
 ```
 
-**Classes:** `ILLMAdapter`, `BaseLLMAdapter`, `OpenAIAdapter`, `AnthropicAdapter`, `GeminiAdapter`, `LlamaAdapter`, `MistralAdapter`, `BedrockAdapter`, `CompassCore42Adapter`
+**Classes:** `ILLMAdapter`, `BaseLLMAdapter`, all concrete adapters, `AWALangChainModel`
 
 ---
 
-### 16.2 Registry / Plugin — `LLMAdapterRegistry` + `AdapterRegistryLoader`
+### 17.2 Registry / Plugin — `LLMAdapterRegistry` + `AdapterRegistryLoader`
 
 **Problem:** New adapters must be discoverable at runtime without hardcoded `if/elif` chains.
 
-**Solution:** `LLMAdapterRegistry` maintains a `dict[str, ILLMAdapter]`. `AdapterRegistryLoader` reads `adapters_registry.yaml` at startup, dynamically imports enabled adapters, and registers them. The registry is the single lookup point.
-
-**Extension point:** `adapters_registry.yaml` is the only file an engineer edits to add a new adapter to the active runtime.
+**Solution:** `LLMAdapterRegistry` maintains a `dict[str, ILLMAdapter]`. `AdapterRegistryLoader` reads `adapters_registry.yaml` at startup, dynamically imports enabled adapters, and registers them. The `integrations:` section of the registry uses the same mechanism for framework adapter discovery.
 
 **Classes:** `LLMAdapterRegistry`, `AdapterRegistryLoader`
 
 ---
 
-### 16.3 State Machine — `JobStateMachine`
+### 17.3 State Machine — `JobStateMachine`
 
 **Problem:** A job's lifecycle has strict sequencing. Invalid transitions must be rejected. State must survive across replicas.
 
-**Solution:** Transitions are encoded as a `frozenset` of `(from, to)` tuples. `_can_transition()` validates any move against this table. State is persisted in Redis (keyed by `job_id`), so any replica can advance a job.
+**Solution:** Transitions encoded as a `frozenset` of `(from, to)` tuples. State persisted in Redis (or in-process dict in library mode).
 
 ```python
 _TRANSITIONS = frozenset({
-    (JobState.INITIATED,         JobState.AWAITING_DYNAMIC),
-    (JobState.INITIATED,         JobState.READY_TO_ASSEMBLE),
-    (JobState.AWAITING_DYNAMIC,  JobState.READY_TO_ASSEMBLE),
-    (JobState.AWAITING_DYNAMIC,  JobState.FAILED),
-    (JobState.READY_TO_ASSEMBLE, JobState.ASSEMBLING),
-    (JobState.ASSEMBLING,        JobState.BUILT),
-    (JobState.ASSEMBLING,        JobState.FAILED),
+    (INITIATED,          AWAITING_DYNAMIC),
+    (INITIATED,          READY_TO_ASSEMBLE),
+    (AWAITING_DYNAMIC,   READY_TO_ASSEMBLE),
+    (AWAITING_DYNAMIC,   FAILED),
+    (READY_TO_ASSEMBLE,  ASSEMBLING),
+    (ASSEMBLING,         BUILT),
+    (ASSEMBLING,         FAILED),
 })
 ```
 
@@ -1539,9 +1972,9 @@ _TRANSITIONS = frozenset({
 
 ---
 
-### 16.4 Template Method — `BaseEventHandler`
+### 17.4 Template Method — `BaseEventHandler`
 
-**Problem:** Every event handler needs the same error isolation, validation, and dead-letter logic. Duplicating this across handlers is fragile.
+**Problem:** Every event handler needs the same error isolation, validation, and dead-letter logic.
 
 **Solution:** `safe_handle()` defines the skeleton: validate → handle → on_error. Subclasses override only `handle()`.
 
@@ -1559,175 +1992,214 @@ class BaseEventHandler(ABC):
     async def handle(self, event: BaseEvent) -> None: ...
 ```
 
-**Classes:** `BaseEventHandler`, `PromptBuildRequestedHandler`, `RAGContextRetrievedHandler`, `AgentContextReadyHandler`, `DynamicComponentTimeoutHandler`
+**Classes:** `BaseEventHandler` and all concrete handlers
 
 ---
 
-### 16.5 Repository — Data Access Abstraction
+### 17.5 Repository — Data Access Abstraction
 
 **Problem:** Service code must not know whether data lives in Postgres, Redis, or an in-memory fixture for tests.
 
-**Solution:** Four port interfaces define the data access contract. Concrete implementations are injected via DI.
+**Solution:** Four port interfaces define the data access contract. Concrete implementations injected via DI.
 
-**Interfaces:** `ISectionRepository`, `ITemplateRepository`, `IConsumerRepository`, `IJobStateRepository`  
-**Implementations:** `PostgresSectionRepository`, `PostgresTemplateRepository`, `PostgresConsumerRepository`, `RedisJobStateRepository`
+**Interfaces:** `ISectionRepository`, `ITemplateRepository`, `IConsumerRepository`, `IJobStateRepository`
 
 ---
 
-### 16.6 Chain of Responsibility — Version Resolution
+### 17.6 Chain of Responsibility — Version Resolution
 
 **Problem:** Section version must be resolved through a priority chain: job override → consumer pin → active version.
 
-**Solution:** `SectionLoader.resolve_version()` walks a responsibility chain. Each step either handles the request or passes it down.
+**Solution:** `SectionLoader.resolve_version()` walks a responsibility chain. Each step either handles or passes down.
 
 ```python
 async def resolve_version(self, consumer_id, component, job_overrides):
     if version := job_overrides.get(str(component)):
-        return version                                     # step 1: job override
+        return version                                       # step 1: job override
     if version := consumer.version_pins.get(str(component)):
         if version != "LATEST":
-            return version                                 # step 2: consumer pin
-    return await self.section_repo.get_active_version(consumer_id, component)  # step 3: latest
+            return version                                   # step 2: consumer pin
+    return await self.section_repo.get_active_version(...)   # step 3: latest
 ```
-
-**Class:** `SectionLoader`
 
 ---
 
-### 16.7 Observer — Context Quality Monitoring
+### 17.7 Observer — Context Quality Monitoring
 
-**Problem:** The builder must not contain bloat and rot detection logic. New observation strategies should be addable without changing the builder.
+**Problem:** The builder must not contain bloat and rot detection logic.
 
-**Solution:** `IContextObserver` is the observer interface. `ContextObserverService` is registered as the observer. It delegates to `BloatDetector` and `RotDetector` and publishes `ContextAlert` events independently.
+**Solution:** `IContextObserver` port. `ContextObserverService` delegates to `BloatDetector` (now including `p_tools` bloat check) and `RotDetector`.
 
 **Classes:** `IContextObserver`, `ContextObserverService`, `BloatDetector`, `RotDetector`
 
 ---
 
-### 16.8 Builder (Incremental Construction) — `SectionMap` + `TemplateExecutor`
+### 17.8 Builder (Incremental Construction) — `SectionMap` + `TemplateExecutor`
 
-**Problem:** The prompt is assembled section by section from different sources (static loader, RAG pipeline, CoT engine). Construction order must be decoupled from assembly order.
+**Problem:** Prompt assembled section-by-section from different sources; construction order ≠ assembly order.
 
-**Solution:** `SectionMap.add()` / `add_rag_sources()` allow order-independent construction. `TemplateExecutor.execute()` then reads the map and produces a final, ordered, budget-trimmed output.
-
-**Classes:** `SectionMap`, `TemplateExecutor`
+**Solution:** `SectionMap.add()` / `add_rag_sources()` / `add_tools()` allow order-independent construction. `TemplateExecutor.execute()` produces the final ordered, budget-trimmed output.
 
 ---
 
-### 16.9 Ports and Adapters (Hexagonal Architecture)
+### 17.9 Ports and Adapters (Hexagonal Architecture)
 
 **Problem:** Service code must be testable without Kafka, Postgres, Redis, or any LLM.
 
-**Solution:** The application is partitioned into three rings. The domain and service code (inner ring) depends only on port interfaces. Infrastructure (outer ring) contains all concrete implementations, wired together only in `container.py`.
+**Solution:** Three-ring partitioning. In v3.0.0, `IFrameworkAdapter` and `IEventBus` are new middle-ring ports that maintain this invariant for the integration layer.
 
 ```
-Outer: Postgres, Redis, Kafka, S3, LLM APIs
-         ↕ (through)
-Middle: ISectionRepository, IEventPublisher, ILLMAdapter ...
-         ↕ (through)
+Outer: Postgres, Redis, Kafka, S3, LLM APIs, LangGraph, SK, CrewAI
+         ↕ (through ports)
+Middle: ISectionRepository, IEventBus, ILLMAdapter, IFrameworkAdapter, IContextStore ...
+         ↕ (through ports)
 Inner:  PromptBuilderService, JobStateMachine, TemplateExecutor ...
 ```
 
-**Classes:** All `ports/*.py` interfaces + `infrastructure/container.py`
+---
+
+### 17.10 Factory — `LLMAdapterRegistry.get()`
+
+**Problem:** Callers should not instantiate adapters directly.
+
+**Solution:** `get(model)` resolves model name → model family → registered adapter instance.
 
 ---
 
-### 16.10 Factory — `LLMAdapterRegistry.get()`
+### 17.11 Command — pb-cli Click Commands
 
-**Problem:** The caller should not instantiate adapters directly or know their class names.
+**Problem:** CLI operations are complex multi-step procedures requiring encapsulation.
 
-**Solution:** `get(model)` resolves a model name string (e.g. `"gpt-4o"`) → model family (e.g. `"openai"`) → registered adapter instance. This is the factory method.
-
-**Class:** `LLMAdapterRegistry`
+**Solution:** Each Click command is a self-contained command object. In v3.0.0, the new `pb-cli integration` command group follows the same pattern with no impact on existing commands.
 
 ---
 
-### 16.11 Command — pb-cli Click Commands
+### 17.12 Diff / Patch — Sparse Modification YAMLs
 
-**Problem:** CLI operations (onboard, modify, rollback) are complex multi-step procedures. Each should be encapsulated with its own validation, dry-run, and apply logic.
+**Problem:** Modification of existing configuration must be safe, minimal, and non-destructive.
 
-**Solution:** Each Click command function is a self-contained command object: it parses input, creates the appropriate service, and delegates. Adding a new CLI command does not affect existing ones.
-
-**Class:** `cli.py` — each `@click.command`
+**Solution:** All modification schemas default every field to `null`. Service computes a diff, applies only non-null fields, writes rollback snapshot first. The `integrations` block in `pb_use_case_modify.yaml` follows the same sparse pattern.
 
 ---
 
-### 16.12 Diff / Patch — Sparse Modification YAMLs
+### 17.13 Adapter / Bridge — `IFrameworkAdapter`
 
-**Problem:** Modification of existing configuration must be safe, minimal in scope, and non-destructive to unmentioned fields.
+**Problem:** LangGraph, Semantic Kernel, and CrewAI each have completely different state models, invocation APIs, and result types. The core prompt builder cannot contain framework-specific code.
 
-**Solution:** All modification schemas default every field to `null`. The service computes a diff between the current state and the desired state, applies only non-null fields, and writes a rollback snapshot before any changes. The same YAML applied twice is a no-op.
+**Solution:** `IFrameworkAdapter` is the **Adapter** pattern interface. Each concrete adapter (`LangGraphAdapter`, `SemanticKernelAdapter`, `CrewAIAdapter`) translates between the framework's native types and AWA's `PromptBuildRequest` / `BuiltPrompt` domain types. The bridge is bidirectional: `map_to_build_request()` converts framework state → AWA; `map_from_built_prompt()` converts AWA result → framework native. The core `PromptBuilderService` is never aware of which framework (if any) triggered the build.
 
-**Classes:** `AdapterModifySchema`, `UseCaseModifySchema`, `AdapterModificationService`, `UseCaseModificationService`
+```python
+# LangGraph side: receives a TypedDict
+def map_to_build_request(self, state: AWAPromptState) -> PromptBuildRequest:
+    return PromptBuildRequest(
+        consumer_id = state["awa_consumer_id"],
+        job_id      = state["awa_job_id"],
+        p_uq        = state["messages"][-1].content,
+    )
+
+# LangGraph side: returns a partial state update dict
+def map_from_built_prompt(self, prompt: BuiltPrompt) -> dict:
+    return {"awa_built_prompt": prompt.payload, "awa_observation": prompt.observation_ref}
+```
+
+**Classes:** `IFrameworkAdapter`, `LangGraphAdapter`, `SemanticKernelAdapter`, `CrewAIAdapter`, `ContextBridgeService`
 
 ---
 
-## 17. SOLID Compliance
+### 17.14 Strategy — `ConsumerResolutionStrategy`
+
+**Problem:** Different deployment contexts require different ways of determining which `AWA_Consumer_ID` applies to a given framework execution.
+
+**Solution:** `ConsumerResolutionStrategy` is a strategy interface. `IDCorrelationService` accepts any implementation and delegates resolution. Engineers choose the right strategy at onboarding time via the `integrations.consumer_resolution.strategy` YAML field.
+
+```python
+class ConsumerResolutionStrategy(ABC):
+    @abstractmethod
+    def resolve(self, identity: str) -> str: ...
+
+class ExplicitStrategy(ConsumerResolutionStrategy):
+    def resolve(self, identity: str) -> str:
+        return identity   # identity IS the consumer_id
+
+class FrameworkIdentityStrategy(ConsumerResolutionStrategy):
+    def resolve(self, identity: str) -> str:
+        return identity.upper().replace(" ", "_")   # e.g. "Invoice Processor" → "INVOICE_PROCESSOR"
+
+class ConfigMapStrategy(ConsumerResolutionStrategy):
+    def __init__(self, map_path: str): self._map = yaml.safe_load(open(map_path))
+    def resolve(self, identity: str) -> str:
+        return self._map[identity]   # lookup in config file
+```
+
+**Classes:** `ConsumerResolutionStrategy`, `ExplicitStrategy`, `FrameworkIdentityStrategy`, `ConfigMapStrategy`, `IDCorrelationService`
+
+---
+
+## 18. SOLID Compliance
 
 ### S — Single Responsibility
 
-Every class has one and only one axis of change:
-
 | Class | Sole responsibility | Why it doesn't do more |
 |---|---|---|
-| `PromptBuilderService` | Orchestrates the assembly pipeline | Delegates loading to `SectionLoader`, state to `JobStateMachine`, formatting to `LLMAdapter` |
+| `PromptBuilderService` | Orchestrates the assembly pipeline | Delegates loading, state, formatting, observation |
 | `SectionLoader` | Resolve and load section content | Does not know about templates, formatting, or LLMs |
 | `DynamicDependencyResolver` | Build wait checklists from config | Does not know about state machine or Kafka |
 | `JobStateMachine` | Enforce valid state transitions | Does not know about section content or LLM format |
-| `TemplateExecutor` | Apply template ordering + token budget | Does not know about DB or Kafka |
-| `BloatDetector` | Detect token overuse | Does not detect rot, does not publish events |
+| `TemplateExecutor` | Apply template ordering + token budget | Does not know about DB or event bus |
+| `BloatDetector` | Detect token overuse (incl. p_tools) | Does not detect rot, does not publish events |
 | `RotDetector` | Detect staleness and semantic drift | Does not detect bloat, does not publish events |
-| `ContextObserverService` | Orchestrate detectors, build report | Delegates detection entirely to `BloatDetector` and `RotDetector` |
+| `ContextObserverService` | Orchestrate detectors, build report | Delegates detection entirely |
 | `VersionManagerService` | Snapshot, version, rollback sections | Does not know about job assembly or event flows |
-| `AdapterScaffoldGenerator` | Generate Python class files from Jinja2 | Does not manage the registry or validate schemas |
-| `AdapterRegistryLoader` | Read/write `adapters_registry.yaml` | Does not generate code or validate YAML |
-| `UseCaseOnboardingService` | Create consumer DB records from onboard YAML | Does not apply modifications or handle modification rollback |
-| `UseCaseModificationService` | Apply sparse diffs per block | Delegates section versioning to `VersionManagerService` |
-| `BaseEventHandler` | Define safe execution skeleton | Does not contain business logic |
+| `LangGraphAdapter` | Translate LangGraph state ↔ AWA types | Does not contain assembly logic |
+| `SemanticKernelAdapter` | Translate SK arguments ↔ AWA types | Does not contain assembly logic |
+| `CrewAIAdapter` | Translate CrewAI context ↔ AWA types | Does not contain assembly logic |
+| `ContextBridgeService` | Bidirectional state mapping | Does not know which adapter called it |
+| `IDCorrelationService` | Resolve framework identity → consumer ID | Does not assemble prompts or manage state |
+| `AWACrewLLM` | Intercept CrewAI LLM calls + enrich | Does not manage versions or observation |
+| `PromptEnrichmentFilter` | Intercept SK function calls + enrich | Does not manage versions or observation |
 
 ### O — Open/Closed
 
-The framework is **open for extension, closed for modification** in four dimensions:
+The framework is **open for extension, closed for modification** in six dimensions:
 
 | Extension | How to extend | Core code changed? |
 |---|---|---|
-| **New LLM adapter** | Subclass `BaseLLMAdapter`, implement `format()` + `estimate_tokens()`, register in registry | ❌ |
-| **New messaging adapter** | Run `pb-cli adapter onboard`, fill `adapter_onboard.yaml` with `type: messaging`; scaffold generates class | ❌ |
-| **New dynamic component** (beyond RAG and agent context) | Add `ComponentType` enum value, add field to `DynamicDependencyConfig`, add arm in `DynamicDependencyResolver._make_checklist_item()` | Minimal — one enum + one resolver arm |
-| **New observation signal** | Subclass `BloatDetector` or add a new detector; inject into `ContextObserverService` | ❌ |
-| **New event type** | Subclass `BaseEventHandler`; add entry to `KafkaEventConsumer.handler_map` | ❌ |
-| **New CLI command** | Add `@click.command` to `cli.py`; no existing commands affected | ❌ |
-| **New use case modification block** | Add field to `UseCaseModifyEntry`; add handler method; add entry to `_BLOCK_HANDLERS` | ❌ to existing handlers |
+| **New LLM adapter** | Subclass `BaseLLMAdapter`, register in registry | ❌ |
+| **New messaging adapter** | Run `pb-cli adapter onboard` | ❌ |
+| **New framework integration** | Implement `IFrameworkAdapter` + `IContextStore` adapter; register in DI | ❌ |
+| **New dynamic component** | Add `ComponentType` enum value + resolver arm | Minimal — 2 lines |
+| **New observation signal** | Add detector method to `BloatDetector` or `RotDetector` | ❌ to other signals |
+| **New consumer resolution strategy** | Implement `ConsumerResolutionStrategy` | ❌ |
+| **New CLI command** | Add `@click.command` | ❌ to existing commands |
 
 ### L — Liskov Substitution
 
-All port implementations are fully interchangeable from their consumers' perspective:
+All port implementations are fully interchangeable:
 
 | Interface | Substitutable implementations |
 |---|---|
-| `ISectionRepository` | `PostgresSectionRepository`, `InMemorySectionRepository` (test double) |
-| `IJobStateRepository` | `RedisJobStateRepository`, `InMemoryJobStateRepository` (test double) |
-| `ILLMAdapter` | `OpenAIAdapter`, `AnthropicAdapter`, `CompassCore42Adapter` — all return a valid `LLMPayload` |
-| `IContextObserver` | `ContextObserverService`, `NoOpObserver` (for unit tests that don't test observation) |
-| `IEventPublisher` | `KafkaEventPublisher`, `RabbitMQEventPublisher`, `InMemoryEventPublisher` (test double) |
-| `ISnapshotStore` | `S3SnapshotStore`, `AzureBlobSnapshotStore`, `LocalFileSnapshotStore` (test/dev) |
-
-None of these substitutions require any change in the consuming service.
+| `ISectionRepository` | `PostgresSectionRepository`, `InMemorySectionRepository` (test) |
+| `IJobStateRepository` | `RedisJobStateRepository`, `InMemoryJobStateRepository` (test) |
+| `ILLMAdapter` | All 7 concrete adapters; all return valid `LLMPayload` |
+| `IContextObserver` | `ContextObserverService`, `NoOpObserver` (tests) |
+| `IEventBus` | `KafkaEventBus`, `InProcessEventBus` — identical publish/subscribe semantics |
+| `IFrameworkAdapter` | `LangGraphAdapter`, `SemanticKernelAdapter`, `CrewAIAdapter` |
+| `IContextStore` | `LangGraphCheckpointContextAdapter`, `SKVectorMemoryContextAdapter`, `CrewAIMemoryContextAdapter` |
+| `ISnapshotStore` | `S3SnapshotStore`, `AzureBlobSnapshotStore`, `LocalFileSnapshotStore` |
+| `ConsumerResolutionStrategy` | All three strategies; all return a valid `str` consumer ID |
 
 ### I — Interface Segregation
 
-Ports are granular. No class is forced to implement methods it doesn't use:
-
 | Separation | Rationale |
 |---|---|
-| `IEventPublisher` ≠ `KafkaEventConsumer` | A service that only publishes never implements consume logic |
-| `ISectionRepository` ≠ `ITemplateRepository` | Test mocks can implement only the one being tested |
-| `ISnapshotStore` ≠ `ISectionRepository` | Object store and relational store have completely different APIs |
-| `ITimerService` ≠ `IEventPublisher` | Scheduling and publishing are unrelated concerns |
-| `ITokenCounter` ≠ `IEmbeddingClient` | Rot detection can be configured without embedding support |
-| `IAuditLog` ≠ any repository | Audit is append-only; its interface has only `record()` |
-| `AdapterOnboardSchema` ≠ `AdapterModifySchema` | Onboarding (full config) and modification (sparse diff) have different validation rules |
-| `UseCaseOnboardSchema` ≠ `UseCaseModifySchema` | Same reason |
+| `IEventBus` ≠ `IEventPublisher` | Bus owns subscribe; publisher is write-only |
+| `IFrameworkAdapter` ≠ `IContextStore` | Adapter bridges full request; store only provides agent memory content |
+| `ISectionRepository` ≠ `ITemplateRepository` | Test mocks implement only the one needed |
+| `ITimerService` ≠ `IEventBus` | Scheduling and event coordination are unrelated |
+| `ITokenCounter` ≠ `IEmbeddingClient` | Rot detection configurable without embedding |
+| `IAuditLog` ≠ any repository | Audit is append-only with only `record()` |
+| `UseCaseOnboardSchema` ≠ `UseCaseModifySchema` | Full config vs. sparse diff have different validation |
+| `ConsumerResolutionStrategy` ≠ `IDCorrelationService` | Strategy is the algorithm; service is the coordinator |
 
 ### D — Dependency Inversion
 
@@ -1737,37 +2209,33 @@ High-level services depend on abstractions, never on infrastructure:
 PromptBuilderService
     depends on → ILLMAdapter         (not OpenAIAdapter)
     depends on → IContextObserver    (not ContextObserverService)
-    depends on → IEventPublisher     (not KafkaEventPublisher)
+    depends on → IEventBus           (not KafkaEventBus)
     depends on → IConsumerRepository (not PostgresConsumerRepository)
 
-SectionLoader
-    depends on → ISectionRepository  (not PostgresSectionRepository)
-    depends on → IConsumerRepository
+LangGraphAdapter / SemanticKernelAdapter / CrewAIAdapter
+    depends on → IFrameworkAdapter   (self)
+    depends on → ContextBridgeService
+    calls      → PromptBuilderService (the service, not infrastructure)
 
-JobStateMachine
-    depends on → IJobStateRepository (not RedisJobStateRepository)
-    depends on → ITimerService       (not RedisTimerService)
-
-UseCaseModificationService
-    depends on → IConsumerRepository, ISectionRepository, ITemplateRepository,
-                 IEventPublisher, IAuditLog, ISnapshotStore
-                 (none are concrete classes)
+IDCorrelationService
+    depends on → ConsumerResolutionStrategy (not ConfigMapStrategy directly)
 ```
 
-All concrete bindings are declared once in `infrastructure/container.py`. No service module contains an `import` of any infrastructure class.
+All concrete bindings are declared once in `infrastructure/container.py`. No service or integration module contains an `import` of any infrastructure class.
 
 ---
 
-## 18. Technology Stack
+## 19. Technology Stack
 
 | Layer | Technology | Role |
 |---|---|---|
 | API | FastAPI + uvicorn | Async REST API; OpenAPI docs auto-generated |
-| Event bus | Apache Kafka + aiokafka | Async event publishing and consuming |
+| Event bus (service mode) | Apache Kafka + aiokafka | Async event publishing and consuming |
+| Event bus (library mode) | asyncio.Queue (`InProcessEventBus`) | In-process event coordination |
 | Job state | Redis (redis-py async) | TTL-bounded per-job state machine storage |
 | Persistence | PostgreSQL + SQLAlchemy 2.x async | Sections, templates, consumers, audit, jobs |
 | Object store | AWS S3 / Azure Blob Storage | Version snapshots, prompt archives |
-| DI framework | dependency-injector | Wires ports to concrete adapters |
+| DI framework | dependency-injector | Wires ports to concrete adapters; mode-aware |
 | Config | pydantic-settings | Typed environment variable config |
 | Schema validation | pydantic v2 | YAML schema validation with field-level errors |
 | Code generation | Jinja2 | Scaffold templates for adapters and tests |
@@ -1775,7 +2243,10 @@ All concrete bindings are declared once in `infrastructure/container.py`. No ser
 | YAML parsing | PyYAML | Adapter and use case config files |
 | Token counting | tiktoken | OpenAI/Llama/Mistral token estimation |
 | Embeddings | configurable via `IEmbeddingClient` | Semantic drift detection |
-| Tracing | OpenTelemetry + Jaeger | Distributed traces |
+| **LangGraph integration** | langgraph + langchain-core | `PromptBuilderNode`, `PromptBuilderRunnable`, `AWALangChainModel` |
+| **Semantic Kernel integration** | semantic-kernel | `PromptBuilderPlugin`, `PromptEnrichmentFilter`, `AWAAIConnector` |
+| **CrewAI integration** | crewai + litellm | `AWACrewLLM`, `PromptBuilderTool`, `AWAAgentMixin` |
+| Tracing | OpenTelemetry + Jaeger | Distributed traces (spans across framework boundaries) |
 | Metrics | Prometheus + Grafana | Service and business metrics |
 | Logging | structlog → ELK | Structured JSON logs |
 | Testing | pytest + pytest-asyncio + httpx | Unit, integration, API tests |
@@ -1783,61 +2254,73 @@ All concrete bindings are declared once in `infrastructure/container.py`. No ser
 
 ---
 
-## 19. Deployment Architecture
+## 20. Deployment Architecture
 
 ```
-┌─────────────────────────────── Kubernetes Cluster ────────────────────────────┐
-│                                                                                │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────────────┐ │
-│  │  prompt-builder   │  │ version-manager  │  │      context-observer        │ │
-│  │  (3 replicas)     │  │  (2 replicas)    │  │       (2 replicas)           │ │
-│  │  HPA: CPU > 70%   │  └──────────────────┘  └──────────────────────────────┘ │
-│  └──────────────────┘                                                          │
-│                                                                                │
-│  ┌──────────────────────────────────────────────────────────────────────────┐  │
-│  │                   Apache Kafka (3-broker cluster)                         │  │
-│  └──────────────────────────────────────────────────────────────────────────┘  │
-│                                                                                │
-│  ┌─────────────────────┐  ┌─────────────────────┐  ┌────────────────────────┐ │
-│  │  PostgreSQL          │  │  Redis Cluster       │  │  S3 / Azure Blob       │ │
-│  │  (Primary + Replica) │  │  (3 nodes)           │  │  (version snapshots)   │ │
-│  └─────────────────────┘  └─────────────────────┘  └────────────────────────┘ │
-│                                                                                │
-│  Each service exposes: /health  /ready  /metrics                              │
-└────────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────── Kubernetes Cluster ─────────────────────────────┐
+│                                                                                  │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────────────┐   │
+│  │  prompt-builder   │  │ version-manager  │  │      context-observer        │   │
+│  │  (3 replicas)     │  │  (2 replicas)    │  │       (2 replicas)           │   │
+│  │  HPA: Kafka lag   │  └──────────────────┘  └──────────────────────────────┘   │
+│  └──────────────────┘                                                            │
+│                                                                                  │
+│  ┌──────────────────────────────────────────────────────────────────────────┐    │
+│  │                   Apache Kafka (3-broker cluster)                         │    │
+│  └──────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                  │
+│  ┌─────────────────────┐  ┌─────────────────────┐  ┌────────────────────────┐   │
+│  │  PostgreSQL          │  │  Redis Cluster       │  │  S3 / Azure Blob       │   │
+│  │  (Primary + Replica) │  │  (3 nodes)           │  │  (version snapshots)   │   │
+│  └─────────────────────┘  └─────────────────────┘  └────────────────────────┘   │
+│                                                                                  │
+│  Each service exposes: /health  /ready  /metrics                                │
+└──────────────────────────────────────────────────────────────────────────────────┘
+
+Library mode (embedded SDK — no Kafka pod required):
+┌───────────────────────────────────────────────────────────────────────────────┐
+│   LangGraph / Semantic Kernel / CrewAI Application Pod                         │
+│   ┌─────────────────────────────────────────────────────────────────────────┐  │
+│   │  awa_prompt_builder (library mode: InProcessEventBus, optional Redis)    │  │
+│   └─────────────────────────────────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Key metrics for HPA (Prompt Builder):** Kafka consumer lag on `awa.prompt.build.requested`. Scale up when lag > 500 messages.
+**Key metrics for HPA (Prompt Builder service mode):** Kafka consumer lag on `awa.prompt.build.requested`. Scale up when lag > 500 messages.
 
 ---
 
-## 20. Security
+## 21. Security
 
 | Control | Implementation |
 |---|---|
-| `p_guard` always included | Enforced in `TemplateExecutor._should_include_slot()`: required=true slots skip the enabled check |
-| Section content integrity | SHA-256 checksum stored per section; `SectionLoader._verify_checksum()` validates before assembly |
-| Secrets exclusion from logs | Section content never logged; only `section_id`, `version`, `token_count` appear in structured logs |
-| API authentication | JWT with RBAC claims: `section:write`, `version:rollback`, `flag:write`, `config:write` |
-| Rollback gate | Short-lived TOTP-style confirmation token required; issued by separate `/rollback/token` endpoint |
-| Audit trail | All flag changes, version changes, rollbacks, onboardings, and modifications written to append-only audit table |
-| Credential management | All credentials via environment variables (never in YAML files); `connection.*` fields in adapter YAML store only the env var name, not the value |
-| Prompt injection | `p_guard` contains explicit injection resistance instructions; loaded first in all templates |
+| `p_guard` always included | Enforced in `TemplateExecutor._should_include_slot()`: `required=true` slots skip the enabled check — **including in library mode via all integration adapters** |
+| Section content integrity | SHA-256 checksum per section; `SectionLoader._verify_checksum()` validates before assembly |
+| Secrets exclusion from logs | Section content and tool schemas never logged; only `section_id`, `version`, `token_count` appear in structured logs |
+| API authentication | JWT with RBAC claims: `section:write`, `version:rollback`, `flag:write`, `config:write`, `integration:write` |
+| Rollback gate | Short-lived TOTP-style confirmation token required |
+| Audit trail | All flag changes, version changes, rollbacks, onboardings, modifications, and integration config changes written to append-only audit table |
+| Credential management | All credentials via environment variables; adapter YAML stores only env var name |
+| Prompt injection | `p_guard` loaded first in all templates including those assembled via integration adapters |
+| `p_tools` isolation | Tool schemas injected by the integration layer are token-counted and bloat-checked before assembly; never stored in DB |
+| Consumer ID validation | `IDCorrelationService.resolve()` validates resolved consumer ID exists in DB before proceeding |
+| Framework context sanitisation | `ContextBridgeService.map_*()` validates and sanitises all framework-provided fields before creating `PromptBuildRequest` |
 
 ---
 
-## 21. Phased Delivery Roadmap
+## 22. Phased Delivery Roadmap
 
 | Phase | Scope | Deliverable |
 |---|---|---|
-| **P1 — Core Assembly** | `domain/`, `ports/`, `PromptBuilderService`, `SectionLoader`, `TemplateExecutor`, `OpenAIAdapter`, `AnthropicAdapter`, `KafkaEventPublisher/Consumer`, `PostgresSectionRepository`, static-only build (no dynamic wait) | End-to-end prompt assembly for static-only use cases |
+| **P1 — Core Assembly** | `domain/`, `ports/`, `PromptBuilderService`, `SectionLoader`, `TemplateExecutor`, `OpenAIAdapter`, `AnthropicAdapter`, `KafkaEventBus`, `InProcessEventBus`, `PostgresSectionRepository`, static-only build | End-to-end prompt assembly for static-only use cases; both event bus implementations from day one |
 | **P2 — Dynamic Components** | `DynamicDependencyResolver`, `JobStateMachine`, Redis state, `DynamicComponentTimeout` event, `RedisJobStateRepository`, `RedisTimerService`, all 5 event flows | Full dynamic prompt construction with configurable wait |
 | **P3 — Versioning** | `VersionManagerService`, `ISnapshotStore`, `S3SnapshotStore`, rollback API, `VersionHistory` table, audit log | Safe config change management with rollback |
-| **P4 — Observation** | `ContextObserverService`, `BloatDetector`, `RotDetector`, `IEmbeddingClient`, per-consumer thresholds, TRIM strategy | Prompt quality monitoring and alerting |
+| **P4 — Observation** | `ContextObserverService`, `BloatDetector` (incl. `p_tools` bloat), `RotDetector`, `IEmbeddingClient`, per-consumer thresholds, TRIM strategy | Prompt quality monitoring and alerting |
 | **P5 — Onboarding** | `onboarding/` package, Jinja2 scaffold, `adapters_registry.yaml`, `pb-cli` adapter and use case commands, all YAML templates | Engineer self-service onboarding |
 | **P6 — Modification** | `AdapterModificationService`, `UseCaseModificationService`, `adapter_modify.yaml`, `pb_use_case_modify.yaml`, modify CLI commands | Live parameter modification with rollback |
 | **P7 — Multi-Model Expansion** | Remaining LLM adapters (Gemini, Llama, Mistral, Bedrock, Compass Core42), RabbitMQ and Azure Service Bus messaging adapters | Full multi-model, multi-broker production readiness |
+| **P8 — Framework Integrations** | `integrations/` package: `LangGraphAdapter` + `PromptBuilderNode` + `PromptBuilderRunnable`; `SemanticKernelAdapter` + `PromptEnrichmentFilter` + `PromptBuilderPlugin`; `CrewAIAdapter` + `AWACrewLLM` + `PromptBuilderTool`; `ContextBridgeService`; `IDCorrelationService` + 3 strategies; 3 `IContextStore` memory adapters; `AWALangChainModel`; `p_tools` component; integration CLI commands; integration YAML block | AWA Prompt Builder composable inside LangGraph, Semantic Kernel, and CrewAI with no changes to core |
 
 ---
 
-*Document version: 2.0.0 — 2026-05-26 — Pending confirmation*
+*Document version: 3.0.0 — 2026-05-26 — Final*
