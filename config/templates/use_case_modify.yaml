@@ -28,9 +28,9 @@
 #
 # USAGE
 #   1. Copy this template, fill in 'awa_consumer_id' and only the blocks changing
-#   2. Validate:   pb-cli use-case validate-modify --config <file>
-#   3. Dry-run:    pb-cli use-case modify --config <file> --env staging --dry-run
-#   4. Apply:      pb-cli use-case modify --config <file> --env staging
+#   2. Validate:   ac-cli use-case validate-modify --config <file>
+#   3. Dry-run:    ac-cli use-case modify --config <file> --env staging --dry-run
+#   4. Apply:      ac-cli use-case modify --config <file> --env staging
 #
 # IDEMPOTENCY
 #   If the current state already matches the desired values, the command
@@ -38,7 +38,7 @@
 #
 # ROLLBACK
 #   Every successful modify writes a rollback snapshot before applying changes.
-#   To revert: pb-cli use-case rollback --consumer-id <id> --ref <rollback-ref>
+#   To revert: ac-cli use-case rollback --consumer-id <id> --ref <rollback-ref>
 # ==============================================================================
 
 use_case_modify:

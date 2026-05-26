@@ -7,17 +7,17 @@
 # imports and instantiates each enabled adapter and wires it into the DI
 # container and LLMAdapterRegistry.
 #
-# DO NOT EDIT MANUALLY — use pb-cli to add/remove/enable/disable adapters:
-#   pb-cli adapter onboard  --config <file>   (adds entry here automatically)
-#   pb-cli adapter enable   <name>
-#   pb-cli adapter disable  <name>
+# DO NOT EDIT MANUALLY — use ac-cli to add/remove/enable/disable adapters:
+#   ac-cli adapter onboard  --config <file>   (adds entry here automatically)
+#   ac-cli adapter enable   <name>
+#   ac-cli adapter disable  <name>
 # ==============================================================================
 
 llm:
 
   - name:         openai
     display_name: "OpenAI"
-    class:        awa_prompt_builder.adapters.llm.openai_adapter.OpenAIAdapter
+    class:        awa_agent_cortex.adapters.llm.openai_adapter.OpenAIAdapter
     enabled:      true
     version:      "1.0.0"
     supported_models:
@@ -28,7 +28,7 @@ llm:
 
   - name:         anthropic
     display_name: "Anthropic"
-    class:        awa_prompt_builder.adapters.llm.anthropic_adapter.AnthropicAdapter
+    class:        awa_agent_cortex.adapters.llm.anthropic_adapter.AnthropicAdapter
     enabled:      true
     version:      "1.0.0"
     supported_models:
@@ -38,7 +38,7 @@ llm:
 
   - name:         gemini
     display_name: "Google Gemini"
-    class:        awa_prompt_builder.adapters.llm.gemini_adapter.GeminiAdapter
+    class:        awa_agent_cortex.adapters.llm.gemini_adapter.GeminiAdapter
     enabled:      true
     version:      "1.0.0"
     supported_models:
@@ -47,7 +47,7 @@ llm:
 
   - name:         llama
     display_name: "Meta Llama"
-    class:        awa_prompt_builder.adapters.llm.llama_adapter.LlamaAdapter
+    class:        awa_agent_cortex.adapters.llm.llama_adapter.LlamaAdapter
     enabled:      false
     version:      "1.0.0"
     supported_models:
@@ -56,7 +56,7 @@ llm:
 
   - name:         mistral
     display_name: "Mistral"
-    class:        awa_prompt_builder.adapters.llm.mistral_adapter.MistralAdapter
+    class:        awa_agent_cortex.adapters.llm.mistral_adapter.MistralAdapter
     enabled:      false
     version:      "1.0.0"
     supported_models:
@@ -65,17 +65,17 @@ llm:
 
   - name:         bedrock
     display_name: "AWS Bedrock"
-    class:        awa_prompt_builder.adapters.llm.bedrock_adapter.BedrockAdapter
+    class:        awa_agent_cortex.adapters.llm.bedrock_adapter.BedrockAdapter
     enabled:      false
     version:      "1.0.0"
     supported_models:
       - amazon.nova-pro-v1
       - amazon.titan-text-premier-v1
 
-  # ── Added by pb-cli adapter onboard ────────────────────────────────────────
+  # ── Added by ac-cli adapter onboard ────────────────────────────────────────
   - name:         compass_core42
     display_name: "Compass Core42"
-    class:        awa_prompt_builder.adapters.llm.compass_core42_adapter.CompassCore42Adapter
+    class:        awa_agent_cortex.adapters.llm.compass_core42_adapter.CompassCore42Adapter
     enabled:      true
     version:      "1.0.0"
     supported_models:
@@ -87,24 +87,24 @@ messaging:
 
   - name:         kafka
     display_name: "Apache Kafka"
-    class_publisher: awa_prompt_builder.adapters.messaging.kafka_publisher.KafkaEventPublisher
-    class_consumer:  awa_prompt_builder.adapters.messaging.kafka_consumer.KafkaEventConsumer
+    class_publisher: awa_agent_cortex.adapters.messaging.kafka_publisher.KafkaEventPublisher
+    class_consumer:  awa_agent_cortex.adapters.messaging.kafka_consumer.KafkaEventConsumer
     role:         both
     enabled:      true
     version:      "1.0.0"
 
   - name:         rabbitmq
     display_name: "RabbitMQ"
-    class_publisher: awa_prompt_builder.adapters.messaging.rabbitmq_publisher.RabbitMQEventPublisher
-    class_consumer:  awa_prompt_builder.adapters.messaging.rabbitmq_consumer.RabbitMQEventConsumer
+    class_publisher: awa_agent_cortex.adapters.messaging.rabbitmq_publisher.RabbitMQEventPublisher
+    class_consumer:  awa_agent_cortex.adapters.messaging.rabbitmq_consumer.RabbitMQEventConsumer
     role:         both
     enabled:      false
     version:      "1.0.0"
 
   - name:         azure_service_bus
     display_name: "Azure Service Bus"
-    class_publisher: awa_prompt_builder.adapters.messaging.azure_service_bus_publisher.AzureServiceBusPublisher
-    class_consumer:  awa_prompt_builder.adapters.messaging.azure_service_bus_consumer.AzureServiceBusConsumer
+    class_publisher: awa_agent_cortex.adapters.messaging.azure_service_bus_publisher.AzureServiceBusPublisher
+    class_consumer:  awa_agent_cortex.adapters.messaging.azure_service_bus_consumer.AzureServiceBusConsumer
     role:         both
     enabled:      false
     version:      "1.0.0"
@@ -113,13 +113,13 @@ snapshot_store:
 
   - name:         s3
     display_name: "AWS S3"
-    class:        awa_prompt_builder.adapters.snapshot.s3_snapshot_store.S3SnapshotStore
+    class:        awa_agent_cortex.adapters.snapshot.s3_snapshot_store.S3SnapshotStore
     enabled:      true
     version:      "1.0.0"
 
   - name:         azure_blob
     display_name: "Azure Blob Storage"
-    class:        awa_prompt_builder.adapters.snapshot.azure_blob_snapshot_store.AzureBlobSnapshotStore
+    class:        awa_agent_cortex.adapters.snapshot.azure_blob_snapshot_store.AzureBlobSnapshotStore
     enabled:      false
     version:      "1.0.0"
 
@@ -127,6 +127,6 @@ timer:
 
   - name:         redis
     display_name: "Redis Timer"
-    class:        awa_prompt_builder.infrastructure.timer_service.RedisTimerService
+    class:        awa_agent_cortex.infrastructure.timer_service.RedisTimerService
     enabled:      true
     version:      "1.0.0"
