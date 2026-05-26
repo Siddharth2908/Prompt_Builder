@@ -1,9 +1,9 @@
 # ==============================================================================
-# AWA Prompt Builder — Adapter Onboarding Template
+# AWA Agent Cortex — Adapter Onboarding Template
 # ==============================================================================
 #
 # PURPOSE
-#   Onboard a new adapter into the Prompt Builder framework.
+#   Onboard a new adapter into the AWA Agent Cortex framework.
 #   Adapters can be one of four types:
 #     llm           — a new LLM provider (e.g. Compass Core42, Azure OpenAI)
 #     messaging     — a new event bus (e.g. RabbitMQ, Azure Service Bus)

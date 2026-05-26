@@ -1,4 +1,4 @@
-# AWA Prompt Builder — Technical Design Document
+# AWA Agent Cortex — Technical Design Document
 
 **Version:** 3.0.0  **Date:** 2026-05-26  **Status:** Final  
 **Language:** Python 3.12  **Architecture:** Event-Driven Microservice · Hexagonal · Framework-Composable
@@ -35,13 +35,13 @@
 
 ## 1. Executive Summary
 
-The **AWA Prompt Builder** is a runtime prompt construction microservice that assembles structured, LLM-standard-aware prompts from discrete versioned components before every LLM call. It is event-driven (Kafka), horizontally scalable, and model-agnostic.
+The **AWA Agent Cortex** is a runtime prompt construction microservice that assembles structured, LLM-standard-aware prompts from discrete versioned components before every LLM call. It is event-driven (Kafka), horizontally scalable, and model-agnostic.
 
 Every prompt is built across a three-tier identity hierarchy: a **use case** (`AWA_Consumer_ID`) that defines the business domain, a specific **AI task** (`AWA_Task_ID`) that defines what capability is being invoked, and a **single LLM call** (`AWA_Job_ID`). This hierarchy enables precise prompt composition — business context and guardrails are shared at the consumer level, instruction logic is scoped to the task, and dynamic content (RAG, agent context, tool schemas) is resolved per job.
 
 All quality thresholds are sourced from configuration files and resolved through a `ThresholdResolver` at runtime — no magic numbers exist in detector code. Runtime-generated content (OCR output, live retrievals) receives a dedicated `ContentQualityDetector` pathway in place of traditional rot detection, using confidence scores, relevance-to-query, and noise ratio as quality signals.
 
-For teams using agent orchestration frameworks, AWA Prompt Builder ships first-class integrations for **LangGraph**, **Semantic Kernel**, and **CrewAI** via a pluggable `IFrameworkAdapter` port, supporting both standalone microservice deployment and embedded library mode.
+For teams using agent orchestration frameworks, AWA Agent Cortex ships first-class integrations for **LangGraph**, **Semantic Kernel**, and **CrewAI** via a pluggable `IFrameworkAdapter` port, supporting both standalone microservice deployment and embedded library mode.
 
 ---
 
@@ -75,7 +75,7 @@ For teams using agent orchestration frameworks, AWA Prompt Builder ships first-c
 |---|---------|
 | F-13 | Six-state lifecycle: `INITIATED → AWAITING_DYNAMIC → READY_TO_ASSEMBLE → ASSEMBLING → BUILT / FAILED` |
 | F-14 | Per-job checklist stored in Redis (TTL-bounded), mirrored to Postgres on terminal state |
-| F-15 | Redis-based distributed state — any Prompt Builder replica can advance a job |
+| F-15 | Redis-based distributed state — any Agent Cortex replica can advance a job |
 | F-16 | Delay-queue timer events for dynamic component timeouts |
 | F-17 | Five named event flows (no dynamic, RAG happy path, both dynamic, timeout PROCEED_WITHOUT, timeout FAIL) |
 
@@ -233,9 +233,9 @@ For teams using agent orchestration frameworks, AWA Prompt Builder ships first-c
         ┌─────────────────────────┼─────────────────────────┐
         ▼                         ▼                         ▼
 ┌──────────────┐        ┌──────────────────┐       ┌──────────────────────┐
-│ Prompt       │        │ Version Manager  │       │ Context Observer     │
-│ Builder      │        │ Service          │       │ Service              │
-│ Service      │        └──────────────────┘       └──────────────────────┘
+│ Agent        │        │ Version Manager  │       │ Context Observer     │
+│ Cortex       │        │ Service          │       │ Service              │
+│              │        └──────────────────┘       └──────────────────────┘
 └──────┬───────┘
        │
 ┌──────▼─────────────────────────────────────────────────┐
@@ -256,7 +256,7 @@ For teams using agent orchestration frameworks, AWA Prompt Builder ships first-c
 
 | Service | Responsibility |
 |---|---|
-| **Prompt Builder** | Orchestrates the full assembly pipeline; owns job state machine; resolves task context |
+| **Agent Cortex** | Orchestrates the full assembly pipeline; owns job state machine; resolves task context |
 | **Version Manager** | Snapshot versioning, rollback, audit for sections and templates |
 | **Context Observer** | Bloat, rot, and content quality detection; emits alerts; applies TRIM strategy |
 | **LLM Adapter Registry** | Translates canonical `SectionMap` into LLM-native prompt format |
@@ -1006,18 +1006,18 @@ PUT    /api/v1/consumers/{id}/tasks/{task_id}/observer-thresholds
 
 | Topic | Publisher | Consumers | Purpose |
 |---|---|---|---|
-| `awa.prompt.build.requested` | API Gateway / Framework Adapter | Prompt Builder | Trigger assembly |
-| `awa.prompt.rag.retrieved` | RAG Pipeline | Prompt Builder | Inject RAG context + metrics |
-| `awa.prompt.agent.context.ready` | CoT/ToT Engine | Prompt Builder | Inject agent context |
-| `awa.prompt.dynamic.timeout` | Timer Service | Prompt Builder | Deadline exceeded |
-| `awa.prompt.built` | Prompt Builder | LLM Caller, Context Observer, Audit | Final prompt ready |
-| `awa.prompt.build.failed` | Prompt Builder | Alert, Caller | Build failed |
+| `awa.prompt.build.requested` | API Gateway / Framework Adapter | Agent Cortex | Trigger assembly |
+| `awa.prompt.rag.retrieved` | RAG Pipeline | Agent Cortex | Inject RAG context + metrics |
+| `awa.prompt.agent.context.ready` | CoT/ToT Engine | Agent Cortex | Inject agent context |
+| `awa.prompt.dynamic.timeout` | Timer Service | Agent Cortex | Deadline exceeded |
+| `awa.prompt.built` | Agent Cortex | LLM Caller, Context Observer, Audit | Final prompt ready |
+| `awa.prompt.build.failed` | Agent Cortex | Alert, Caller | Build failed |
 | `awa.prompt.build.blocked` | Context Observer | Alert, Caller | Observer blocked build |
 | `awa.prompt.context.alert` | Context Observer | Alert, Dashboard | Bloat/rot/quality warning |
-| `awa.version.changed` | Version Manager | Prompt Builder (cache invalidate) | Section/template updated |
-| `awa.version.rolledback` | Version Manager | Prompt Builder, Audit | Rollback applied |
-| `awa.section.flag.changed` | Control Plane API | Prompt Builder | Enable/disable section |
-| `awa.dynamic.config.changed` | Control Plane API | Prompt Builder | Dynamic config updated |
+| `awa.version.changed` | Version Manager | Agent Cortex (cache invalidate) | Section/template updated |
+| `awa.version.rolledback` | Version Manager | Agent Cortex, Audit | Rollback applied |
+| `awa.section.flag.changed` | Control Plane API | Agent Cortex | Enable/disable section |
+| `awa.dynamic.config.changed` | Control Plane API | Agent Cortex | Dynamic config updated |
 
 ### 13.2 Key Event Schemas
 
@@ -1610,7 +1610,7 @@ stateDiagram-v2
 ```mermaid
 sequenceDiagram
     participant C  as Caller
-    participant PB as Prompt Builder
+    participant PB as Agent Cortex
     participant R  as Redis
     participant T  as Timer Service
     participant RP as RAG Pipeline
@@ -1866,7 +1866,7 @@ All concrete bindings declared once in `infrastructure/container.py`.
 ┌─────────────────────────────── Kubernetes Cluster ────────────────────────────┐
 │                                                                                │
 │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────────────┐ │
-│  │  prompt-builder   │  │ version-manager  │  │      context-observer        │ │
+│  │  agent-cortex   │  │ version-manager  │  │      context-observer        │ │
 │  │  (3 replicas)     │  │  (2 replicas)    │  │       (2 replicas)           │ │
 │  │  HPA: Kafka lag   │  └──────────────────┘  └──────────────────────────────┘ │
 │  └──────────────────┘                                                          │

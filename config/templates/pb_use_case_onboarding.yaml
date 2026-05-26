@@ -1,9 +1,9 @@
 # ==============================================================================
-# AWA Prompt Builder — Use Case Onboarding Template
+# AWA Agent Cortex — Use Case Onboarding Template
 # ==============================================================================
 #
 # PURPOSE
-#   Onboard a new use case (AWA_Consumer) into the Prompt Builder.
+#   Onboard a new use case (AWA_Consumer) into AWA Agent Cortex.
 #   This template creates:
 #     - AWA_Consumer record (with version pins and dynamic config)
 #     - PromptTemplate (slot order, placement, token budget)
@@ -57,7 +57,7 @@ use_case:
                                   # e.g. claude-sonnet-4-6
 
   # ── Dynamic Dependency Configuration ──────────────────────────────────────────
-  # Tells the Prompt Builder whether to wait for RAG context and/or
+  # Tells AWA Agent Cortex whether to wait for RAG context and/or
   # agent reflection context before assembling the prompt for this use case.
   #
   # wait_strategy options:
