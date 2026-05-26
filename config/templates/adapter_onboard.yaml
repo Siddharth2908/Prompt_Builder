@@ -1,0 +1,146 @@
+# ==============================================================================
+# AWA Prompt Builder — Adapter Onboarding Template
+# ==============================================================================
+#
+# PURPOSE
+#   Onboard a new adapter into the Prompt Builder framework.
+#   Adapters can be one of four types:
+#     llm           — a new LLM provider (e.g. Compass Core42, Azure OpenAI)
+#     messaging     — a new event bus (e.g. RabbitMQ, Azure Service Bus)
+#     snapshot_store— a new object store (e.g. Azure Blob, GCS)
+#     timer         — a new timer/delay backend (e.g. Celery Beat, Azure Timer)
+#
+# USAGE
+#   1. Copy this template, rename it to describe your adapter
+#      (e.g. compass_core42_adapter.yaml)
+#   2. Fill in required fields. Remove sections that don't apply.
+#   3. Validate:  pb-cli adapter validate --config <file>
+#   4. Dry-run:   pb-cli adapter onboard  --config <file> --dry-run
+#   5. Apply:     pb-cli adapter onboard  --config <file> --output-dir ./awa_prompt_builder/adapters/<type>/
+#
+# WHAT THE COMMAND DOES
+#   - Validates this YAML against the AdapterOnboardSchema (Pydantic)
+#   - Generates a Python class file from scaffold_templates/<type>_adapter.py.j2
+#   - Generates a test file from scaffold_templates/adapter_test.py.j2
+#   - Appends an entry to config/adapters_registry.yaml
+#   - Prints a checklist of manual steps remaining
+# ==============================================================================
+
+adapter:
+
+  # ── Identity ────────────────────────────────────────────────────────────────
+  name:         REQUIRED          # Unique slug. Used as module name and registry key.
+                                  # Lowercase, underscores only. e.g. compass_core42
+  display_name: REQUIRED          # Human-readable. e.g. "Compass Core42"
+  version:      "1.0.0"          # Semantic version of this adapter
+  adapter_type: REQUIRED          # llm | messaging | snapshot_store | timer
+  author:       REQUIRED          # engineer email or team name
+  enabled:      true              # false = registered but inactive at startup
+
+  # ── LLM Adapter (fill when adapter_type: llm) ────────────────────────────
+  # Remove this block entirely if adapter_type != llm
+  llm:
+    model_family:   REQUIRED      # Short slug for this model family. Used as
+                                  # the strategy key in LLMAdapterRegistry.
+                                  # e.g. compass_core42
+
+    context_window: REQUIRED      # Max token context in integers. e.g. 65536
+
+    supported_models:             # List of exact model name strings callers
+      - REQUIRED                  # will pass in PromptBuildRequestedEvent.llm_model
+                                  # e.g. compass-core42-v1
+
+    prompt_standard: REQUIRED     # How to format the assembled prompt.
+                                  # openai_compatible — messages array with
+                                  #   system/user/assistant roles
+                                  # anthropic         — system param + messages[]
+                                  # custom            — fill custom_format below
+
+    token_counter: REQUIRED       # How to count tokens for this model.
+                                  # tiktoken           — uses cl100k_base encoding
+                                  # anthropic          — uses anthropic SDK counting
+                                  # character_estimate — len(text) // 4 approximation
+                                  # custom             — implement estimate_tokens() manually
+
+    # Only required when prompt_standard: custom
+    custom_format:
+      system_prefix:    ""        # Text prepended before system content
+      system_suffix:    ""        # Text appended after system content
+      user_prefix:      ""        # Text prepended before user content
+      user_suffix:      ""        # Text appended after user content
+      assistant_prefix: ""        # Text prepended before assistant content
+
+    # API connection metadata (optional — used for documentation only;
+    # actual credentials must come from environment variables)
+    connection:
+      base_url:        REQUIRED   # e.g. https://api.compass.example.com/v1
+      auth_type:       REQUIRED   # api_key | oauth2 | mtls
+      env_var_api_key: REQUIRED   # Name of the environment variable holding the key
+                                  # e.g. COMPASS_CORE42_API_KEY
+
+  # ── Messaging Adapter (fill when adapter_type: messaging) ─────────────────
+  # Remove this block entirely if adapter_type != messaging
+  messaging:
+    broker: REQUIRED              # kafka | rabbitmq | azure_event_bus | aws_sqs | aws_sns
+    role:   REQUIRED              # publisher | consumer | both
+
+    # Fill the sub-block matching your broker. Remove others.
+
+    rabbitmq:
+      host_env_var:          REQUIRED   # e.g. RABBITMQ_HOST
+      port:                  5672
+      vhost:                 "/"
+      exchange:              REQUIRED   # e.g. awa.prompt
+      exchange_type:         topic      # direct | fanout | topic | headers
+      port_env_var:          RABBITMQ_PORT     # optional override
+      username_env_var:      RABBITMQ_USER
+      password_env_var:      RABBITMQ_PASSWORD
+
+    azure_event_bus:
+      namespace_env_var:          REQUIRED   # e.g. AZURE_SERVICEBUS_NAMESPACE
+      connection_string_env_var:  REQUIRED   # e.g. AZURE_SERVICEBUS_CONN_STR
+      default_topic:              awa-prompt  # optional default topic name
+
+    aws_sqs:
+      region_env_var:       REQUIRED   # e.g. AWS_REGION
+      queue_url_env_var:    REQUIRED   # e.g. AWA_SQS_QUEUE_URL
+      access_key_env_var:   AWS_ACCESS_KEY_ID
+      secret_key_env_var:   AWS_SECRET_ACCESS_KEY
+
+    aws_sns:
+      region_env_var:       REQUIRED
+      topic_arn_env_var:    REQUIRED   # e.g. AWA_SNS_TOPIC_ARN
+
+  # ── Snapshot Store Adapter (fill when adapter_type: snapshot_store) ────────
+  # Remove this block entirely if adapter_type != snapshot_store
+  snapshot_store:
+    provider: REQUIRED            # s3 | azure_blob | gcs
+
+    azure_blob:
+      connection_string_env_var:  REQUIRED   # e.g. AZURE_STORAGE_CONN_STR
+      container_name:             REQUIRED   # e.g. awa-snapshots
+
+    gcs:
+      project_env_var:            REQUIRED   # e.g. GCS_PROJECT_ID
+      bucket_env_var:             REQUIRED   # e.g. GCS_BUCKET_NAME
+      credentials_file_env_var:   GOOGLE_APPLICATION_CREDENTIALS
+
+  # ── Timer Service Adapter (fill when adapter_type: timer) ─────────────────
+  # Remove this block entirely if adapter_type != timer
+  timer:
+    backend: REQUIRED             # redis | celery_beat | azure_timer_trigger
+
+    celery_beat:
+      broker_url_env_var:   REQUIRED   # e.g. CELERY_BROKER_URL
+      result_backend_env_var: CELERY_RESULT_BACKEND
+
+    azure_timer_trigger:
+      function_app_url_env_var: REQUIRED
+      function_key_env_var:     REQUIRED
+
+  # ── Scaffold Generation ─────────────────────────────────────────────────────
+  scaffold:
+    generate_class: true          # Generate the Python adapter class file
+    generate_tests: true          # Generate a pytest test skeleton
+    output_module:  REQUIRED      # Relative path within awa_prompt_builder/
+                                  # e.g. adapters/llm  or  adapters/messaging

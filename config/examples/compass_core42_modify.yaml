@@ -1,0 +1,21 @@
+# ==============================================================================
+# AWA Prompt Builder — Adapter Modification Example
+# Adapter: Compass Core42 — adding v3 model + expanding context window
+# ==============================================================================
+
+adapter_modify:
+
+  name:          compass_core42
+  new_version:   "1.1.0"
+  change_reason: "Compass Core42-v3 released; context window expanded to 131072"
+  changed_by:    "platform-ai@company.com"
+
+  # Only these two LLM fields are changing — everything else stays as-is
+  llm:
+    context_window: 131072        # was 65536 — CODE CHANGE: pb-cli will prompt to regenerate
+
+    supported_models:             # Full replacement of the list
+      - compass-core42-v1
+      - compass-core42-v2
+      - compass-core42-v2-instruct
+      - compass-core42-v3         # new model added

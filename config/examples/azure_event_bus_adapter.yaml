@@ -1,0 +1,27 @@
+# ==============================================================================
+# AWA Prompt Builder — Adapter Onboarding
+# Adapter: Azure Service Bus Messaging (publisher + consumer)
+# ==============================================================================
+
+adapter:
+
+  name:         azure_service_bus
+  display_name: "Azure Service Bus"
+  version:      "1.0.0"
+  adapter_type: messaging
+  author:       "platform-cloud@company.com"
+  enabled:      false
+
+  messaging:
+    broker: azure_event_bus
+    role:   both
+
+    azure_event_bus:
+      namespace_env_var:         AZURE_SERVICEBUS_NAMESPACE
+      connection_string_env_var: AZURE_SERVICEBUS_CONN_STR
+      default_topic:             awa-prompt
+
+  scaffold:
+    generate_class: true
+    generate_tests: true
+    output_module:  adapters/messaging

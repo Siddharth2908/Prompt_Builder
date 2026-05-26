@@ -1,0 +1,39 @@
+# ==============================================================================
+# AWA Prompt Builder — Adapter Onboarding
+# Adapter: Compass Core42 LLM
+# ==============================================================================
+
+adapter:
+
+  name:         compass_core42
+  display_name: "Compass Core42"
+  version:      "1.0.0"
+  adapter_type: llm
+  author:       "platform-ai@company.com"
+  enabled:      true
+
+  llm:
+    model_family:   compass_core42
+    context_window: 65536
+
+    supported_models:
+      - compass-core42-v1
+      - compass-core42-v2
+      - compass-core42-v2-instruct
+
+    # Core42's API is OpenAI-compatible — no custom format needed
+    prompt_standard: openai_compatible
+
+    # Use tiktoken cl100k_base as an approximation; replace with
+    # Core42-specific tokeniser once available
+    token_counter: tiktoken
+
+    connection:
+      base_url:        "https://api.core42.ai/v1"
+      auth_type:       api_key
+      env_var_api_key: COMPASS_CORE42_API_KEY
+
+  scaffold:
+    generate_class: true
+    generate_tests: true
+    output_module:  adapters/llm

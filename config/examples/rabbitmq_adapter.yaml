@@ -1,0 +1,31 @@
+# ==============================================================================
+# AWA Prompt Builder — Adapter Onboarding
+# Adapter: RabbitMQ Messaging (publisher + consumer)
+# ==============================================================================
+
+adapter:
+
+  name:         rabbitmq
+  display_name: "RabbitMQ"
+  version:      "1.0.0"
+  adapter_type: messaging
+  author:       "platform-infra@company.com"
+  enabled:      false             # kept inactive; Kafka is the default messaging adapter
+
+  messaging:
+    broker: rabbitmq
+    role:   both                  # generates both publisher and consumer classes
+
+    rabbitmq:
+      host_env_var:     RABBITMQ_HOST
+      port:             5672
+      vhost:            "/awa"
+      exchange:         awa.prompt
+      exchange_type:    topic
+      username_env_var: RABBITMQ_USER
+      password_env_var: RABBITMQ_PASSWORD
+
+  scaffold:
+    generate_class: true
+    generate_tests: true
+    output_module:  adapters/messaging

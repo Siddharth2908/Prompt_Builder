@@ -1,0 +1,146 @@
+# ==============================================================================
+# AWA Prompt Builder — Use Case Modification Template
+# ==============================================================================
+#
+# PURPOSE
+#   Modify parameters of an existing use case (AWA_Consumer) after onboarding.
+#   This is a SPARSE (diff-based) template — only specify what is changing.
+#   Omitted blocks are left untouched.
+#
+# HOW EACH CHANGE IS HANDLED
+#   ┌────────────────────────────┬──────────────────────────────────────────────────────────────┐
+#   │ Block changed              │ Effect                                                       │
+#   ├────────────────────────────┼──────────────────────────────────────────────────────────────┤
+#   │ llm                        │ DB update (AWAConsumer); validates model is in registry       │
+#   │ dynamic_dependency_config  │ DB update + publishes DynamicConfigChanged (cache invalidate) │
+#   │ template.slots             │ Creates new PromptTemplate version; preserves old for rollback│
+#   │ template.token_budget      │ Creates new PromptTemplate version                           │
+#   │ sections.<component>       │ Creates new PromptSection version via VersionManagerService   │
+#   │ version_pins               │ DB update (AWAConsumer.version_pins)                         │
+#   │ observer_thresholds        │ DB update (ObserverThresholds)                               │
+#   └────────────────────────────┴──────────────────────────────────────────────────────────────┘
+#
+# VERSIONING BEHAVIOUR
+#   - Section content changes: new version created. Old version kept for rollback.
+#   - Template changes: new template version created. Old version kept for rollback.
+#   - Config changes (llm, dynamic config, observer): no version branching;
+#     previous value captured in audit log for rollback reference.
+#
+# USAGE
+#   1. Copy this template, fill in 'awa_consumer_id' and only the blocks changing
+#   2. Validate:   pb-cli use-case validate-modify --config <file>
+#   3. Dry-run:    pb-cli use-case modify --config <file> --env staging --dry-run
+#   4. Apply:      pb-cli use-case modify --config <file> --env staging
+#
+# IDEMPOTENCY
+#   If the current state already matches the desired values, the command
+#   reports "No changes needed" for each block and exits with code 0.
+#
+# ROLLBACK
+#   Every successful modify writes a rollback snapshot before applying changes.
+#   To revert: pb-cli use-case rollback --consumer-id <id> --ref <rollback-ref>
+# ==============================================================================
+
+use_case_modify:
+
+  # ── Required: identifies which use case to modify ───────────────────────────
+  awa_consumer_id: REQUIRED       # Must match an existing consumer in the DB
+  change_reason:   REQUIRED       # Why is this change being made?
+  changed_by:      REQUIRED       # Engineer email
+  jira_ticket:     null           # Optional tracking reference
+
+  # ── Block 1: LLM model change ───────────────────────────────────────────────
+  # Effect: DB update only. Model must be registered in adapters_registry.yaml.
+  # Omit this block entirely if LLM config is not changing.
+  llm:
+    default_model:  null          # e.g. claude-opus-4-7
+    fallback_model: null          # e.g. gpt-4o | null to clear
+
+  # ── Block 2: Dynamic dependency config change ───────────────────────────────
+  # Effect: DB update + publishes DynamicConfigChanged on awa.dynamic.config.changed
+  #         Prompt Builder cache is invalidated on next event.
+  # Omit this block entirely if dynamic config is not changing.
+  # Omit individual component blocks if that component is not changing.
+  dynamic_dependency_config:
+
+    p_rag_context_n:
+      applicable:           null  # true | false
+      wait_strategy:        null  # NOT_APPLICABLE | OPTIONAL | REQUIRED
+      timeout_ms:           null  # integer milliseconds
+      on_timeout:           null  # PROCEED_WITHOUT | FAIL
+      min_sources_required: null  # integer
+
+    p_agent_context:
+      applicable:    null
+      wait_strategy: null
+      timeout_ms:    null
+      on_timeout:    null
+
+  # ── Block 3: Template change ────────────────────────────────────────────────
+  # Effect: Creates a new PromptTemplate version. Old version preserved.
+  # You can modify slots, token_budget, or both.
+  # Omit this block entirely if the template is not changing.
+  template:
+    new_version: REQUIRED_IF_BLOCK_PRESENT   # e.g. "1.1.0"
+
+    # Provide only the slots that are changing.
+    # Slots not listed here remain exactly as they are in the current version.
+    # To disable a slot: set enabled: false
+    # To re-order: provide new 'order' values for all affected slots
+    slots:
+      - component: null           # ComponentType key, e.g. p_agent_context
+        enabled:   null           # true | false
+        order:     null           # integer
+        placement: null           # system | user
+        required:  null           # true | false
+
+    # Provide only the budget fields that are changing.
+    token_budget:
+      system_max:                  null
+      user_max:                    null
+      rag_context_max_per_source:  null
+      rag_source_limit:            null
+
+  # ── Block 4: Section content change ────────────────────────────────────────
+  # Effect: Creates a new PromptSection version via VersionManagerService.
+  #         Old version preserved and rollback is possible.
+  # List only the sections whose content is changing.
+  sections:
+
+    # Example: update p_act_bus content
+    # p_act_bus:
+    #   new_version: "1.1.0"
+    #   change_reason: "Added handling for credit note line items"
+    #   source: inline             # inline | file
+    #   content: |
+    #     Updated content here...
+    #
+    # Example: update from a file
+    # p_act_ins:
+    #   new_version: "1.2.0"
+    #   change_reason: "Revised post-processing rules"
+    #   source: file
+    #   content_file: config/sections/IDP_INVOICE_US/p_act_ins_v1.2.txt
+
+  # ── Block 5: Version pin change ─────────────────────────────────────────────
+  # Effect: DB update (AWAConsumer.version_pins).
+  # Provide only the components whose pin is changing.
+  # Use LATEST to always resolve to the active version at job time.
+  version_pins:
+    # p_act_bus: "1.1.0"
+    # p_guard:   LATEST
+
+  # ── Block 6: Observer threshold change ──────────────────────────────────────
+  # Effect: DB update (ObserverThresholds for this consumer).
+  # Provide only the threshold fields that are changing.
+  observer_thresholds:
+    bloat:
+      total_utilization_warn_pct:    null
+      total_utilization_block_pct:   null
+      section_dominance_warn_pct:    null
+      rag_source_overflow_limit:     null
+    rot:
+      staleness_warn_days:           null
+      staleness_block_days:          null
+      semantic_drift_warn_threshold: null
+      semantic_drift_enabled:        null   # true | false
