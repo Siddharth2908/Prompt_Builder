@@ -1,0 +1,34 @@
+# ==============================================================================
+# AWA Prompt Builder — Use Case Modification Example
+# Use Case: IDP_INVOICE_US — tightening RAG timeout + updating extraction rules
+# ==============================================================================
+
+use_case_modify:
+
+  awa_consumer_id: IDP_INVOICE_US
+  change_reason:   "Increase RAG timeout for large invoices; update extraction rules for credit notes"
+  changed_by:      "eng-alice@company.com"
+  jira_ticket:     "AWA-502"
+
+  # Block 2: tighten RAG wait behaviour — only p_rag_context_n is changing
+  dynamic_dependency_config:
+    p_rag_context_n:
+      timeout_ms: 8000            # was 5000 — large multi-page invoices need more time
+      on_timeout: FAIL            # was PROCEED_WITHOUT — extraction without OCR is meaningless
+
+  # Block 4: update extraction instruction section only
+  sections:
+    p_act_ins:
+      new_version:   "1.1.0"
+      change_reason: "Added credit note handling and GST variant rules"
+      source:        file
+      content_file:  config/sections/IDP_INVOICE_US/p_act_ins_v1.1.txt
+
+  # Block 5: pin p_act_ins to the new version
+  version_pins:
+    p_act_ins: "1.1.0"
+
+  # Block 6: relax bloat warning since OCR text for large invoices is verbose
+  observer_thresholds:
+    bloat:
+      section_dominance_warn_pct: 70    # was 65

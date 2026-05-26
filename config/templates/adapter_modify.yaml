@@ -1,0 +1,92 @@
+# ==============================================================================
+# AWA Prompt Builder — Adapter Modification Template
+# ==============================================================================
+#
+# PURPOSE
+#   Modify an existing adapter that has already been onboarded.
+#   This is a SPARSE (diff-based) template — only specify the fields you
+#   want to change. Omitted fields remain exactly as they are.
+#
+# CHANGE TYPES AND THEIR EFFECTS
+#   ┌─────────────────────────────────┬────────────────────────────────────────┐
+#   │ Field(s) changed                │ What happens                           │
+#   ├─────────────────────────────────┼────────────────────────────────────────┤
+#   │ enabled                         │ Registry-only update, DI reload        │
+#   │ supported_models                │ Registry-only update, DI reload        │
+#   │ connection.*                    │ Registry-only update, DI reload        │
+#   │ messaging.*.exchange / topic    │ Registry-only update, DI reload        │
+#   │ context_window                  │ Registry update + CODE CHANGE needed   │
+#   │ prompt_standard                 │ Registry update + CODE CHANGE needed   │
+#   │ token_counter                   │ Registry update + CODE CHANGE needed   │
+#   │ custom_format.*                 │ Registry update + CODE CHANGE needed   │
+#   └─────────────────────────────────┴────────────────────────────────────────┘
+#
+#   When a CODE CHANGE is detected, pb-cli prints a diff of what needs to
+#   change in the class file and optionally re-runs scaffold generation
+#   (--regenerate flag). The engineer then implements the updated stubs.
+#
+# USAGE
+#   1. Copy this template, fill in 'name' and only the fields you are changing
+#   2. Validate:   pb-cli adapter validate-modify --config <file>
+#   3. Dry-run:    pb-cli adapter modify --config <file> --dry-run
+#   4. Apply:      pb-cli adapter modify --config <file> [--regenerate]
+#
+# IDEMPOTENCY
+#   Running the same modify YAML twice is safe. If the current registry state
+#   already matches the desired values, the command reports "No changes needed"
+#   and exits cleanly with code 0.
+# ==============================================================================
+
+adapter_modify:
+
+  # ── Required: identifies which adapter to modify ────────────────────────────
+  name:          REQUIRED         # Must match an existing entry in adapters_registry.yaml
+  new_version:   REQUIRED         # Semantic version for this modified adapter (e.g. "1.1.0")
+  change_reason: REQUIRED         # Why is this change being made?
+  changed_by:    REQUIRED         # Engineer email or team name
+
+  # ── Registry-level changes (no code regeneration needed) ──────────────────
+  # Omit any field you are NOT changing.
+  enabled: null                   # true | false | null (null = no change)
+
+  # ── LLM adapter changes ────────────────────────────────────────────────────
+  # Omit entire block if this is not an LLM adapter, or if LLM fields are unchanged.
+  llm:
+    # Registry-only changes
+    supported_models: null        # Replaces the entire list if provided.
+                                  # e.g. [compass-core42-v1, compass-core42-v3]
+
+    connection:
+      base_url:        null       # e.g. https://api.newdomain.com/v2
+      env_var_api_key: null       # e.g. COMPASS_CORE42_API_KEY_V2
+
+    # Code-affecting changes (triggers --regenerate prompt)
+    context_window:   null        # e.g. 131072
+    prompt_standard:  null        # openai_compatible | anthropic | custom
+    token_counter:    null        # tiktoken | anthropic | character_estimate | custom
+
+    custom_format:                # Only relevant when prompt_standard: custom
+      system_prefix:    null
+      system_suffix:    null
+      user_prefix:      null
+      user_suffix:      null
+      assistant_prefix: null
+
+  # ── Messaging adapter changes ───────────────────────────────────────────────
+  # Omit entire block if this is not a messaging adapter, or if unchanged.
+  messaging:
+    enabled: null                 # per-adapter enable, same as top-level enabled
+
+    rabbitmq:
+      exchange:      null         # e.g. awa.prompt.v2
+      exchange_type: null         # direct | fanout | topic | headers
+      vhost:         null
+
+    azure_event_bus:
+      default_topic: null
+      namespace_env_var: null
+      connection_string_env_var: null
+
+    aws_sqs:
+      queue_url_env_var: null
+      region_env_var:    null

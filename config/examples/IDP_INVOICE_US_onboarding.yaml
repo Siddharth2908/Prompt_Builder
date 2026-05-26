@@ -1,0 +1,192 @@
+# ==============================================================================
+# AWA Prompt Builder — Use Case Onboarding
+# Use Case: Intelligent Document Processing — US Invoice Extraction
+# ==============================================================================
+
+use_case:
+
+  awa_consumer_id: IDP_INVOICE_US
+  name:            "Invoice Processing - US"
+  description:     >
+    Extracts structured fields (vendor, invoice number, date, line items,
+    totals, tax) from scanned or digital US invoices using OCR + RAG context.
+  owner:           "team-idp@company.com"
+  tags:
+    - idp
+    - invoice
+    - us
+    - ocr
+
+  environments:
+    - dev
+    - staging
+    - prod
+
+  llm:
+    default_model:  gpt-4o
+    fallback_model: claude-sonnet-4-6
+
+  dynamic_dependency_config:
+
+    p_rag_context_n:
+      applicable:           true
+      wait_strategy:        REQUIRED
+      timeout_ms:           5000
+      on_timeout:           PROCEED_WITHOUT
+      min_sources_required: 1     # at minimum the OCR text must arrive
+
+    p_agent_context:
+      applicable:    false
+      wait_strategy: NOT_APPLICABLE
+      timeout_ms:    null
+      on_timeout:    null
+
+  template:
+    version: "1.0.0"
+
+    slots:
+      - order:     1
+        component: p_guard
+        enabled:   true
+        placement: system
+        required:  true
+
+      - order:     2
+        component: p_agent_rgb
+        enabled:   true
+        placement: system
+        required:  false
+
+      - order:     3
+        component: p_agent_conduct
+        enabled:   true
+        placement: system
+        required:  false
+
+      - order:     4
+        component: p_act_bus
+        enabled:   true
+        placement: system
+        required:  true
+
+      - order:     5
+        component: p_act_ins
+        enabled:   true
+        placement: system
+        required:  true
+
+      - order:     6
+        component: p_act_cond
+        enabled:   true
+        placement: system
+        required:  false
+
+      - order:     7
+        component: p_rag_context_n
+        enabled:   true
+        placement: user
+        required:  false
+
+      - order:     8
+        component: p_agent_context
+        enabled:   false           # NOT_APPLICABLE for this use case
+        placement: user
+        required:  false
+
+      - order:     9
+        component: p_uq
+        enabled:   true
+        placement: user
+        required:  true
+
+    token_budget:
+      system_max:                  3500
+      user_max:                    4500   # larger user budget for OCR text
+      rag_context_max_per_source:  2000   # OCR pages can be verbose
+      rag_source_limit:            3      # cap at 3 OCR pages per call
+
+  sections:
+
+    p_guard:
+      version: "1.0.0"
+      source:  shared
+      shared_from_consumer: GLOBAL
+      component:            p_guard
+      version:              "1.3.2"      # pinned to tested global guardrail version
+
+    p_agent_rgb:
+      version: "1.0.0"
+      source:  file
+      content_file: config/sections/IDP_INVOICE_US/p_agent_rgb.txt
+
+    p_agent_conduct:
+      version: "1.0.0"
+      source:  file
+      content_file: config/sections/IDP_INVOICE_US/p_agent_conduct.txt
+
+    p_act_bus:
+      version: "1.0.0"
+      source:  inline
+      content: |
+        You are an intelligent document processor specialising in US invoices.
+
+        Your task is to extract the following fields from the provided invoice:
+        - vendor_name, vendor_address, vendor_tax_id
+        - invoice_number, invoice_date, due_date, payment_terms
+        - line_items (description, quantity, unit_price, line_total)
+        - subtotal, tax_rate, tax_amount, total_amount, currency
+
+        Common field variations you will encounter:
+        - Invoice number may appear as "Invoice #", "INV-", "Bill No."
+        - Dates may be in MM/DD/YYYY, Month DD YYYY, or DD-Mon-YYYY formats
+        - Tax may appear as "Sales Tax", "GST", "VAT" — always extract percentage and amount
+        - Line items may span multiple rows with continuation markers
+
+    p_act_ins:
+      version: "1.0.0"
+      source:  file
+      content_file: config/sections/IDP_INVOICE_US/p_act_ins.txt
+
+    p_act_cond:
+      version: "1.0.0"
+      source:  inline
+      content: |
+        DO:
+        - Extract only fields explicitly present in the document
+        - Return null for fields that cannot be found
+        - Preserve original formatting of numbers (do not normalise currencies)
+        - Flag low-confidence extractions with a confidence score < 0.8
+
+        DO NOT:
+        - Infer or calculate fields not visible in the document
+        - Correct apparent errors in the source document
+        - Merge or split line items that are not merged/split in the source
+        - Return partial results — always return a complete JSON object
+
+  version_pins:
+    p_guard:         "1.3.2"
+    p_agent_rgb:     "1.0.0"
+    p_agent_conduct: "1.0.0"
+    p_act_bus:       LATEST
+    p_act_ins:       LATEST
+    p_act_cond:      LATEST
+    p_template:      "1.0.0"
+
+  observer_thresholds:
+    bloat:
+      total_utilization_warn_pct:    80
+      total_utilization_block_pct:   95
+      section_dominance_warn_pct:    65    # OCR text is allowed to be large
+      rag_source_overflow_limit:     3
+
+    rot:
+      staleness_warn_days:           45
+      staleness_block_days:          120
+      semantic_drift_warn_threshold: 0.60
+      semantic_drift_enabled:        true
+
+  onboarding_meta:
+    requested_by:  "eng-alice@company.com"
+    approved_by:   "lead-bob@company.com"
+    change_reason: "Initial onboarding of US invoice IDP use case"
+    jira_ticket:   "AWA-421"
