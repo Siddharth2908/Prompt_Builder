@@ -1,0 +1,73 @@
+# =============================================================================
+# AWA Prompt Builder — Global Observer Threshold Defaults
+# =============================================================================
+# These values are the baseline for ALL consumers, tasks, and jobs.
+# Override hierarchy (each level overrides the one above):
+#   global (this file) → consumer config → task config → job-level overrides
+#
+# DO NOT hardcode any of these values in detector or service code.
+# All detectors receive a typed ObserverThresholds object resolved by
+# ThresholdResolver at runtime.
+# =============================================================================
+
+observer:
+
+  # ---------------------------------------------------------------------------
+  # Bloat Detection — triggers when prompt sections consume excessive tokens
+  # ---------------------------------------------------------------------------
+  bloat:
+    # Warn when total assembled prompt exceeds this % of the model context window
+    total_utilization_warn_pct: 80
+
+    # Block assembly when total assembled prompt exceeds this % of context window
+    total_utilization_block_pct: 95
+
+    # Warn when any single section dominates beyond this % of total prompt tokens
+    section_dominance_warn_pct: 60
+
+    # Maximum number of RAG source chunks allowed before overflow warning fires
+    rag_source_overflow_limit: 3
+
+  # ---------------------------------------------------------------------------
+  # Rot Detection — triggers when static section content has gone stale
+  # ---------------------------------------------------------------------------
+  rot:
+    # Warn when a section version has not been updated in this many days
+    staleness_warn_days: 30
+
+    # Block assembly when a section version has not been updated in this many days
+    staleness_block_days: 90
+
+    # Warn when cosine similarity between current and baseline embedding drops
+    # below this threshold (0.0 = completely different, 1.0 = identical)
+    semantic_drift_warn_threshold: 0.65
+
+    # Set to false to disable embedding-based semantic drift checks entirely
+    # (useful in environments without an embedding service)
+    semantic_drift_enabled: true
+
+  # ---------------------------------------------------------------------------
+  # Content Quality Detection — triggers for runtime-generated content
+  # (e.g. OCR output, live retrieval, agent-produced context)
+  # Applies to sections that carry a RuntimeContentMetrics payload.
+  # ---------------------------------------------------------------------------
+  content_quality:
+    # Minimum acceptable confidence score from the upstream content source
+    # (e.g. OCR engine confidence, retrieval model score)
+    min_confidence_score: 0.75
+
+    # Minimum acceptable relevance of section content to the user query (p_uq)
+    # measured as cosine similarity against the query embedding
+    min_relevance_score: 0.60
+
+    # Maximum acceptable noise ratio in the section content
+    # (ratio of non-informative / garbage tokens to total tokens)
+    max_noise_ratio: 0.20
+
+    # When true, assembly is BLOCKED if confidence_score < min_block_confidence
+    # When false, a warning alert is raised but assembly continues
+    block_on_low_confidence: false
+
+    # Hard floor below which assembly is blocked regardless of block_on_low_confidence
+    # Only active when block_on_low_confidence: true
+    min_block_confidence: 0.30
