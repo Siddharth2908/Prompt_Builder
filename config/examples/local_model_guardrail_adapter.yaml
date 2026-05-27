@@ -1,0 +1,77 @@
+# ==============================================================================
+# AWA Agent Cortex — Adapter Onboarding
+# Adapter: Self-Hosted Model Guardrail (On-Prem)
+# Target:  On-premises Kubernetes — air-gapped / no external AI service access
+# ==============================================================================
+#
+# WHEN TO USE THIS
+#   On-prem deployment with no access to Azure AI Content Safety or AWS services.
+#   Calls a self-hosted HTTP inference endpoint running a prompt injection
+#   classification model. Best used alongside the in-process PatternMatcher
+#   (always active) for layered defence in air-gapped environments.
+#
+# RECOMMENDED MODEL
+#   protectai/deberta-v3-base-prompt-injection (Apache 2.0 license)
+#   https://huggingface.co/protectai/deberta-v3-base-prompt-injection
+#
+# SERVING OPTIONS
+#   vLLM:             vllm serve protectai/deberta-v3-base-prompt-injection
+#   Hugging Face TGI: text-generation-inference
+#   BentoML:          bentoml serve ...
+#   Custom FastAPI:   wrap the transformers pipeline in a /classify endpoint
+#
+# ENDPOINT CONTRACT
+#   The service must implement:
+#     POST /classify
+#     Request body:  {"text": "<content to scan>"}
+#     Response body: {"label": "INJECTION" | "SAFE", "score": 0.0–1.0}
+#
+#   label="INJECTION" + score >= injection_threshold → BLOCK
+#   Any other combination → PASS
+#   Timeout / unreachable → WARN (build continues)
+#
+# K8S DEPLOYMENT NOTE
+#   Deploy the model server as a separate Deployment in the awa-system namespace.
+#   Use a ClusterIP Service; the adapter calls it via in-cluster DNS:
+#     http://guardrail-service.awa-system.svc.cluster.local:8080
+#   No Ingress needed — this is internal cluster traffic only.
+#
+# USAGE
+#   ac-cli adapter validate --config local_model_guardrail_adapter.yaml
+#   ac-cli adapter onboard  --config local_model_guardrail_adapter.yaml \
+#                           --output-dir ./awa_agent_cortex/adapters/guardrail/
+# ==============================================================================
+
+adapter:
+
+  name:         local_model_guardrail
+  display_name: "Self-Hosted Model Guardrail (On-Prem)"
+  version:      "1.0.0"
+  adapter_type: guardrail
+  author:       "platform-ai@company.com"
+  enabled:      false
+
+  guardrail:
+    provider: local_model
+
+    local_model:
+      # In-cluster URL of the inference service.
+      # e.g. http://guardrail-service.awa-system.svc.cluster.local:8080
+      env_var_endpoint_url: GUARDRAIL_MODEL_ENDPOINT
+
+      # Path of the classification endpoint on the server.
+      classify_path: /classify
+
+      # Score threshold above which a predicted INJECTION label triggers BLOCK.
+      # Lower = more sensitive (more false positives).
+      # Higher = less sensitive (more false negatives).
+      injection_threshold: 0.80
+
+      # HTTP request timeout in seconds.
+      # Keep low — a slow guardrail degrades p99 build latency.
+      timeout_seconds: 5
+
+  scaffold:
+    generate_class: true
+    generate_tests: true
+    output_module:  adapters/guardrail

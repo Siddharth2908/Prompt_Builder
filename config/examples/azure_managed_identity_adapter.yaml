@@ -1,0 +1,67 @@
+# ==============================================================================
+# AWA Agent Cortex — Adapter Onboarding
+# Adapter: Azure Managed Identity (Credential)
+# Target:  AKS with Workload Identity (Azure AD federated credential)
+# ==============================================================================
+#
+# WHEN TO USE THIS
+#   Your Agent Cortex deployment runs on AKS and needs secretless authentication
+#   to Azure services (Azure OpenAI, Key Vault, Service Bus, Blob Storage).
+#   The pod's federated identity is exchanged for an Azure AD token at runtime —
+#   no API key is stored in the cluster.
+#
+# PREREQUISITES
+#   1. AKS cluster with OIDC Issuer enabled:
+#        az aks update --enable-oidc-issuer --enable-workload-identity \
+#          --name <cluster> --resource-group <rg>
+#   2. Azure AD service principal or User-Assigned Managed Identity created.
+#   3. Federated credential configured on the identity:
+#        az identity federated-credential create --name awa-agent-cortex \
+#          --identity-name <identity> --resource-group <rg> \
+#          --issuer <aks-oidc-issuer-url> \
+#          --subject system:serviceaccount:awa-system:awa-agent-cortex-sa \
+#          --audiences api://AzureADTokenExchange
+#   4. RBAC assignments on target services:
+#        Azure OpenAI    → Cognitive Services OpenAI User
+#        Key Vault       → Key Vault Secrets User
+#        Service Bus     → Azure Service Bus Data Sender / Data Receiver
+#        Blob Storage    → Storage Blob Data Contributor
+#   5. K8s ServiceAccount annotated:
+#        azure.workload.identity/client-id: <managed-identity-client-id>
+#
+# USAGE
+#   ac-cli adapter validate --config azure_managed_identity_adapter.yaml
+#   ac-cli adapter onboard  --config azure_managed_identity_adapter.yaml \
+#                           --output-dir ./awa_agent_cortex/adapters/credential/
+# ==============================================================================
+
+adapter:
+
+  name:         azure_managed_identity
+  display_name: "Azure Managed Identity"
+  version:      "1.0.0"
+  adapter_type: credential
+  author:       "platform-ai@company.com"
+  enabled:      true
+
+  credential:
+    provider: azure_managed_identity
+
+    # Client ID of the User-Assigned Managed Identity.
+    # Leave unset to use System-Assigned identity or DefaultAzureCredential chain.
+    env_var_client_id: AZURE_CLIENT_ID
+
+    # Key Vault URI — used by get_secret().
+    # e.g. https://awa-agent-cortex-kv.vault.azure.net/
+    env_var_vault_uri: AZURE_KEYVAULT_URI
+
+    # Common token scopes (pass as the 'scope' argument to get_bearer_token):
+    #   Azure OpenAI:   https://cognitiveservices.azure.com/.default
+    #   Key Vault:      https://vault.azure.net/.default
+    #   Service Bus:    https://servicebus.azure.net/.default
+    #   Blob Storage:   https://storage.azure.com/.default
+
+  scaffold:
+    generate_class: true
+    generate_tests: true
+    output_module:  adapters/credential

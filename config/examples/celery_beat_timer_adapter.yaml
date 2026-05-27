@@ -1,0 +1,65 @@
+# ==============================================================================
+# AWA Agent Cortex — Adapter Onboarding
+# Adapter: Celery Beat Timer
+# Target:  On-premises Kubernetes (or any K8s without cloud scheduler service)
+# ==============================================================================
+#
+# WHEN TO USE THIS
+#   On-prem or air-gapped deployment where neither Azure Service Bus nor
+#   AWS EventBridge are available. Uses Celery's apply_async(countdown=N)
+#   to schedule delayed task execution via a broker (Redis or RabbitMQ).
+#
+# OPERATIONAL REQUIREMENTS
+#   This adapter requires two additional long-running workloads in your cluster:
+#
+#   1. Celery Worker — executes the awa_agent_cortex.tasks.deliver_timer_event task:
+#        deployment/celery-worker (image: awa-agent-cortex, command: celery worker)
+#        Resources: 1 CPU / 512Mi baseline; HPA on queue depth
+#
+#   2. Celery Beat — only required for *periodic* (cron-style) tasks, NOT for
+#        countdown-based one-shot delays. For AWA Agent Cortex timer use,
+#        the worker alone is sufficient. Beat is optional.
+#
+# CANCELLATION BEHAVIOUR
+#   cancel() calls celery.control.revoke(task_id). The task is cancelled only if
+#   the worker has not yet picked it up. Once a worker starts executing the task,
+#   revoke() with terminate=False has no effect. This is a known limitation of
+#   Celery's countdown model. For strict cancellation guarantees, use the
+#   azure_service_bus_timer or aws_eventbridge_timer adapters instead.
+#
+# HOW IT WORKS
+#   schedule() → app.send_task("deliver_timer_event", countdown=delay_seconds)
+#              → Celery task ID returned as timer_id
+#   cancel()   → app.control.revoke(task_id, terminate=False)
+#
+# USAGE
+#   ac-cli adapter validate --config celery_beat_timer_adapter.yaml
+#   ac-cli adapter onboard  --config celery_beat_timer_adapter.yaml \
+#                           --output-dir ./awa_agent_cortex/adapters/timer/
+# ==============================================================================
+
+adapter:
+
+  name:         celery_beat_timer
+  display_name: "Celery Beat Timer"
+  version:      "1.0.0"
+  adapter_type: timer
+  author:       "platform-ai@company.com"
+  enabled:      false
+
+  timer:
+    backend: celery_beat
+
+    celery_beat:
+      # Celery broker URL. Use Redis (recommended for on-prem) or RabbitMQ.
+      # Redis:    redis://:${REDIS_PASSWORD}@redis-master:6379/1
+      # RabbitMQ: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      env_var_broker_url: CELERY_BROKER_URL
+
+      # Optional result backend. Set to track task state (not required for timers).
+      env_var_result_backend: CELERY_RESULT_BACKEND
+
+  scaffold:
+    generate_class: true
+    generate_tests: true
+    output_module:  adapters/timer

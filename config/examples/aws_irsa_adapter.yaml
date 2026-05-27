@@ -1,0 +1,73 @@
+# ==============================================================================
+# AWA Agent Cortex — Adapter Onboarding
+# Adapter: AWS IAM Roles for Service Accounts — IRSA (Credential)
+# Target:  Amazon EKS
+# ==============================================================================
+#
+# WHEN TO USE THIS
+#   Your Agent Cortex deployment runs on Amazon EKS and needs secretless
+#   authentication to AWS services (Bedrock, S3, Secrets Manager, SQS/SNS).
+#   The pod's OIDC service account token is exchanged for STS temporary
+#   credentials scoped to the assigned IAM Role — no long-lived keys in the cluster.
+#
+# PREREQUISITES
+#   1. EKS cluster with OIDC provider associated:
+#        eksctl utils associate-iam-oidc-provider --cluster <cluster> --approve
+#   2. IAM Role created with a trust policy allowing the EKS OIDC provider:
+#        {
+#          "Effect": "Allow",
+#          "Principal": {
+#            "Federated": "arn:aws:iam::<ACCOUNT>:oidc-provider/<OIDC_ISSUER>"
+#          },
+#          "Action": "sts:AssumeRoleWithWebIdentity",
+#          "Condition": {
+#            "StringEquals": {
+#              "<OIDC_ISSUER>:sub": "system:serviceaccount:awa-system:awa-agent-cortex-sa",
+#              "<OIDC_ISSUER>:aud": "sts.amazonaws.com"
+#            }
+#          }
+#        }
+#   3. IAM permissions attached to the role:
+#        bedrock:InvokeModel, bedrock:ApplyGuardrail
+#        s3:GetObject, s3:PutObject, s3:DeleteObject  (on awa-snapshots bucket)
+#        secretsmanager:GetSecretValue                (on awa/* secrets)
+#        sqs:SendMessage, sqs:ReceiveMessage          (on awa-* queues)
+#        scheduler:CreateSchedule, scheduler:DeleteSchedule  (EventBridge Scheduler)
+#   4. K8s ServiceAccount annotated:
+#        eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT>:role/<ROLE_NAME>
+#   5. Pod spec labels:
+#        azure.workload.identity/use: "true"  ← NOT needed on AWS; EKS auto-injects
+#        AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN are injected by the EKS
+#        admission webhook automatically.
+#
+# USAGE
+#   ac-cli adapter validate --config aws_irsa_adapter.yaml
+#   ac-cli adapter onboard  --config aws_irsa_adapter.yaml \
+#                           --output-dir ./awa_agent_cortex/adapters/credential/
+# ==============================================================================
+
+adapter:
+
+  name:         aws_irsa
+  display_name: "AWS IAM Roles for Service Accounts (IRSA)"
+  version:      "1.0.0"
+  adapter_type: credential
+  author:       "platform-ai@company.com"
+  enabled:      false
+
+  credential:
+    provider: aws_irsa
+
+    # AWS region for Secrets Manager, STS endpoint selection.
+    env_var_region: AWS_REGION
+
+    # Note: AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN are injected by the
+    # EKS admission webhook — do not set them manually in .env files.
+    #
+    # boto3 picks up the IRSA credential chain automatically when these vars
+    # are present. No additional configuration is required in the adapter.
+
+  scaffold:
+    generate_class: true
+    generate_tests: true
+    output_module:  adapters/credential

@@ -1,0 +1,60 @@
+# ==============================================================================
+# AWA Agent Cortex — Adapter Onboarding
+# Adapter: Azure AI Content Safety (Guardrail)
+# Target:  AKS (Azure-native)
+# ==============================================================================
+#
+# WHEN TO USE THIS
+#   Azure-native deployment. Provides the deepest available guardrail coverage:
+#     • Prompt Shield — AI-powered direct + indirect prompt injection detection
+#     • Content Filter — Hate, Violence, Sexual, SelfHarm severity scoring
+#
+# SCAN LAYERS (executed in order; first BLOCK terminates the scan)
+#   1. Prompt Shield: AttackDetected=true → BLOCK (confidence=0.95)
+#   2. Content Filter: severity ≥ threshold → BLOCK (confidence=0.90)
+#   3. Both unavailable → WARN (build continues; alert emitted)
+#
+# NOTE ON FALLBACK
+#   This is the SECOND line of defence. The in-process PatternMatcher
+#   (regex heuristics, zero latency, no external call) runs first.
+#   If this adapter returns WARN, the PatternMatcher result already stands.
+#   The build is never blocked solely because this adapter is unreachable.
+#
+# AUTH
+#   Managed Identity (preferred) or API key via env var.
+#   Managed Identity requires: Cognitive Services User role on the resource.
+#
+# USAGE
+#   ac-cli adapter validate --config azure_content_safety_adapter.yaml
+#   ac-cli adapter onboard  --config azure_content_safety_adapter.yaml \
+#                           --output-dir ./awa_agent_cortex/adapters/guardrail/
+# ==============================================================================
+
+adapter:
+
+  name:         azure_content_safety
+  display_name: "Azure AI Content Safety"
+  version:      "1.0.0"
+  adapter_type: guardrail
+  author:       "platform-ai@company.com"
+  enabled:      true
+
+  guardrail:
+    provider: azure_content_safety
+
+    azure_content_safety:
+      # Endpoint URI of the Azure AI Content Safety resource.
+      # e.g. https://awa-content-safety.cognitiveservices.azure.com/
+      env_var_endpoint: AZURE_CONTENT_SAFETY_ENDPOINT
+
+      # API key (optional — omit to use Managed Identity).
+      env_var_api_key: AZURE_CONTENT_SAFETY_KEY
+
+      # Content filter severity threshold (0–6). Severity >= this value → BLOCK.
+      # 2 = low, 4 = medium (default), 6 = high only
+      severity_threshold: 4
+
+  scaffold:
+    generate_class: true
+    generate_tests: true
+    output_module:  adapters/guardrail
