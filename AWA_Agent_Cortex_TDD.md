@@ -1,9 +1,9 @@
 # AWA Agent Cortex — Technical Design Document
 
-**Version:** 4.0.0  **Date:** 2026-05-27  **Status:** Final  
-**Language:** Python 3.12  **Architecture:** Event-Driven Microservice · Hexagonal · Framework-Composable  
-**Supersedes:** v3.0.0 (2026-05-26)  
-**Change drivers:** FMEA v1.0.0 hardening (28 action items) · Azure-native infrastructure · Strategic LLM platform positioning
+**Version:** 4.1.0  **Date:** 2026-05-27  **Status:** Final  
+**Language:** Python 3.12  **Architecture:** Event-Driven Microservice · Hexagonal · Framework-Composable · Multi-Cloud Portable  
+**Supersedes:** v4.0.0 (2026-05-27)  
+**Change drivers:** FMEA v1.0.0 hardening (28 action items) · Azure-native infrastructure · Strategic LLM platform positioning · Multi-cloud adapter framework (credential, timer, guardrail ports)
 
 ---
 
@@ -44,7 +44,9 @@ The **AWA Agent Cortex** is the central LLM platform service for all AWA agents.
 
 Every prompt is built across a three-tier identity hierarchy: a **use case** (`AWA_Consumer_ID`) that defines the business domain, a specific **AI task** (`AWA_Task_ID`) that defines what capability is being invoked, and a **single LLM call** (`AWA_Job_ID`). This hierarchy enables precise prompt composition — business context and guardrails are shared at the consumer level, instruction logic is scoped to the task, and dynamic content (RAG, agent context, tool schemas) is resolved per job.
 
-This version (v4.0.0) incorporates all 28 action items from the FMEA v1.0.0 risk register. Key hardening changes include: atomic Redis Lua state transitions, idempotency keys on all events, embedding circuit breaker with Redis cache, parallel observer evaluation, prompt injection detection layer, tool schema validation, 4-eyes content review gate, job-level safety floors, consumer ownership enforcement on APIs, stuck job sweeper, and bounded library-mode event queues. The Azure-native infrastructure alignment replaces generic Kafka/S3/timer references with Azure Event Hubs, Azure Blob Storage, and Azure Service Bus scheduled messages.
+This version (v4.1.0) incorporates all 28 action items from the FMEA v1.0.0 risk register, and introduces a multi-cloud adapter framework across three new port types: `ICredentialProvider` (IAM), `ITimerService` (extended), and `IGuardrailService` (content safety). Each port has three interchangeable implementations — Azure-native, AWS-native, and on-prem — enabling Agent Cortex to be deployed on AKS, Amazon EKS, or bare Kubernetes without any changes to the domain or application layers. Releases 1–3 are Azure-native. Release 4 extends the platform to AWS (EKS + IRSA + EventBridge + Comprehend/Bedrock Guardrails) and on-prem Kubernetes (Vault + Celery Beat + self-hosted model guardrail).
+
+Key hardening changes (carried from v4.0.0) include: atomic Redis Lua state transitions, idempotency keys on all events, embedding circuit breaker with Redis cache, parallel observer evaluation, prompt injection detection layer, tool schema validation, 4-eyes content review gate, job-level safety floors, consumer ownership enforcement on APIs, stuck job sweeper, and bounded library-mode event queues.
 
 ---
 
@@ -66,15 +68,16 @@ AWA Agent Cortex is not a helper library that individual agents optionally use. 
 | Category | Owned by Agent Cortex | Owned by Platform | Owned by Upstream |
 |---|---|---|---|
 | **Event infrastructure** | Azure Event Hubs (Kafka endpoint) — topics, consumer groups, ACLs | Azure Event Hubs namespace provisioning, networking, RBAC | — |
-| **Timer** | `AzureServiceBusTimerAdapter` (schedules delay events) | Azure Service Bus namespace | — |
-| **State** | Redis job state machine, checklist, embedding cache | Redis Enterprise E10 cluster | — |
-| **Persistence** | PostgreSQL schema: sections, templates, consumers, tasks, jobs, audit | PostgreSQL Flexible Server | — |
-| **Snapshots** | Write + read to `awa-snapshots` container | Azure Blob Storage ZRS | — |
-| **LLM calls** | Adapter formatting, token estimation, model registry | Azure OpenAI resource, AI Foundry routing | — |
-| **Safety** | `PromptInjectionDetector`, `ToolSchemaValidator`, `ContentReviewGate`, safety floors | Azure AI Content Safety (Prompt Shield) API | — |
+| **Timer** | `ITimerService` port — Azure Service Bus (R1–R3) · AWS EventBridge Scheduler (R4) · Celery Beat (R4 on-prem) | Azure Service Bus namespace / AWS EventBridge / Celery broker | — |
+| **State** | Redis job state machine, checklist, embedding cache | Redis Enterprise E10 / ElastiCache / self-hosted Redis | — |
+| **Persistence** | PostgreSQL schema: sections, templates, consumers, tasks, jobs, audit | PostgreSQL Flexible Server / RDS / self-hosted PG | — |
+| **Snapshots** | Write + read to snapshot store via `ISnapshotStore` port | Azure Blob ZRS (R1–R3) · AWS S3 / MinIO (R4) | — |
+| **LLM calls** | Adapter formatting, token estimation, model registry | Azure OpenAI (R1–R3) · Bedrock / direct API (R4) | — |
+| **Credential / IAM** | `ICredentialProvider` port — Managed Identity (R1–R3) · IRSA (R4 AWS) · Vault (R4 on-prem) | Entra ID / AWS IAM / HashiCorp Vault | — |
+| **Guardrail** | `IGuardrailService` port — Azure Content Safety (R1–R3) · Amazon Comprehend/Bedrock Guardrails (R4 AWS) · Local model (R4 on-prem) | Azure AI Content Safety / AWS Comprehend / self-hosted inference | — |
+| **Safety (in-process)** | `PromptInjectionDetector` (pattern layer), `ToolSchemaValidator`, `ContentReviewGate`, safety floors — cloud-agnostic, no external dependency | — | — |
 | **Retrieval** | Consumes RAG results via event; `ContentQualityDetector` for quality | — | Azure AI Search, Document Intelligence |
-| **Identity** | Managed Identity workload federation, JWT RBAC claims | Entra ID app registrations, Key Vault | — |
-| **Observability** | Structured logs, Prometheus metrics, OTEL traces | Application Insights, Managed Prometheus, Managed Grafana, Log Analytics | — |
+| **Observability** | Structured logs, Prometheus metrics, OTEL traces | Application Insights (R1–R3) · CloudWatch/Grafana (R4) | — |
 
 ---
 
@@ -170,12 +173,18 @@ AWA Agent Cortex is not a helper library that individual agents optionally use. 
 | # | Feature |
 |---|---------|
 | F-51 | YAML template (`adapter_onboard.yaml`) for engineer self-service adapter registration |
-| F-52 | Four adapter types: `llm`, `messaging`, `snapshot_store`, `timer` |
+| F-52 | Six adapter types: `llm`, `messaging`, `snapshot_store`, `timer`, `credential`, `guardrail` |
 | F-53 | Pydantic schema validation with field-level error messages |
 | F-54 | Jinja2 scaffold generation: Python class file + pytest skeleton |
 | F-55 | Auto-append to `config/adapters_registry.yaml` master registry |
 | F-56 | Dry-run mode previews generated files without writing |
 | F-57 | Post-generation checklist of manual TODOs |
+| F-101 | `ICredentialProvider` port: `get_bearer_token(scope)`, `get_secret(name)` — abstracts cloud IAM from all other adapters |
+| F-102 | Three `credential` adapter implementations: `AzureManagedIdentityCredentialAdapter` (AKS Workload Identity), `AWSIRSACredentialAdapter` (EKS IRSA + boto3 session), `VaultCredentialAdapter` (K8s auth method + KV v2 secrets) |
+| F-103 | `IGuardrailService` port: `scan(content, consumer_id, job_id) → GuardrailResult(verdict, confidence, categories)` — second-layer AI defence; always graceful-degrades to WARN (never raises) |
+| F-104 | Three `guardrail` adapter implementations: `AzureContentSafetyGuardrailAdapter` (Prompt Shield + content filter, severity threshold configurable), `AmazonComprehendGuardrailAdapter` (Bedrock Guardrails optional + Comprehend toxicity), `LocalModelGuardrailAdapter` (self-hosted HTTP endpoint, e.g. DeBERTa injection classifier) |
+| F-105 | `ITimerService` extended: three `timer` adapter implementations: `AzureServiceBusTimerAdapter` (scheduled_enqueue_time_utc, cancel by sequence number), `AWSEventBridgeTimerAdapter` (one-time AT schedule, ActionAfterCompletion=DELETE, self-deletes), `CeleryBeatTimerAdapter` (apply_async countdown, revoke-based cancel) |
+| F-106 | Deployment profile swap: changing cloud platform requires enabling exactly one adapter per port type in `config/adapters_registry.yaml` and rebinding in `infrastructure/container.py`; domain and application layers are untouched |
 
 ### 3.9 Use Case Onboarding
 
@@ -317,7 +326,9 @@ AWA Agent Cortex is not a helper library that individual agents optionally use. 
 | **Context Observer** | Parallel bloat/rot/quality detection; embedding cache + circuit breaker; emits alerts |
 | **Security Services** | `PromptInjectionDetector`, `ToolSchemaValidator`, `ContentReviewGate` |
 | **LLM Adapter Registry** | Translates canonical `SectionMap` into LLM-native prompt format |
-| **Timer (Azure Service Bus)** | Schedules delay events via `scheduled_enqueue_time_utc`; replaces ITimerService custom implementation |
+| **Timer (`ITimerService`)** | Schedules delay events; Azure Service Bus (R1–R3), AWS EventBridge Scheduler or Celery Beat (R4) |
+| **Credential (`ICredentialProvider`)** | Provides Bearer tokens and secret values to all other adapters; Managed Identity (R1–R3), IRSA or Vault (R4) |
+| **Guardrail (`IGuardrailService`)** | AI-layer second line of defence for injection/content; Azure Content Safety (R1–R3), Comprehend/local model (R4) |
 | **Onboarding/Modification** | CLI-driven; manages adapter registry, consumer, task DB records; enforces review gate |
 | **Framework Integrations** | Bridges AWA domain to LangGraph, Semantic Kernel, CrewAI |
 | **Stuck Job Sweeper** | Leader-elected background task; force-transitions stranded AWAITING_DYNAMIC jobs to FAILED |
@@ -1467,7 +1478,9 @@ awa_agent_cortex/
 │   ├── context_store.py          IContextStore
 │   ├── framework_adapter.py      IFrameworkAdapter
 │   ├── injection_detector.py     IInjectionDetector
-│   └── tool_validator.py         IToolSchemaValidator
+│   ├── tool_validator.py         IToolSchemaValidator
+│   ├── credential_provider.py    ICredentialProvider (get_bearer_token, get_secret, close)
+│   └── guardrail_service.py      IGuardrailService (scan → GuardrailResult[verdict, confidence, categories])
 │
 ├── services/
 │   ├── agent_cortex_service.py   AgentCortexService (renamed from PromptBuilderService)
@@ -1499,10 +1512,20 @@ awa_agent_cortex/
 │   │   ├── kafka_event_bus.py       KafkaEventBus (IEventBus, OSS fallback)
 │   │   └── azure_service_bus_*.py   [generated]
 │   ├── timer/
-│   │   └── azure_sb_timer.py        AzureServiceBusTimerAdapter (ITimerService)
+│   │   ├── azure_sb_timer.py              AzureServiceBusTimerAdapter   (ITimerService, R1–R3)
+│   │   ├── aws_eventbridge_timer.py       AWSEventBridgeTimerAdapter    (ITimerService, R4 AWS)
+│   │   └── celery_beat_timer.py           CeleryBeatTimerAdapter        (ITimerService, R4 on-prem)
+│   ├── credential/
+│   │   ├── azure_managed_identity.py      AzureManagedIdentityCredentialAdapter  (ICredentialProvider, R1–R3)
+│   │   ├── aws_irsa.py                    AWSIRSACredentialAdapter               (ICredentialProvider, R4 AWS)
+│   │   └── vault_credential.py            VaultCredentialAdapter                 (ICredentialProvider, R4 on-prem)
+│   ├── guardrail/
+│   │   ├── azure_content_safety.py        AzureContentSafetyGuardrailAdapter     (IGuardrailService, R1–R3)
+│   │   ├── amazon_comprehend_guardrail.py AmazonComprehendGuardrailAdapter       (IGuardrailService, R4 AWS)
+│   │   └── local_model_guardrail.py       LocalModelGuardrailAdapter             (IGuardrailService, R4 on-prem)
 │   ├── snapshot/
 │   │   ├── azure_blob_snapshot_store.py
-│   │   └── s3_snapshot_store.py     [OSS fallback]
+│   │   └── s3_snapshot_store.py     [OSS fallback / R4 AWS]
 │   ├── security/
 │   │   └── prompt_shield_client.py  AzurePromptShieldClient (wraps AI Content Safety API)
 │   └── llm/
@@ -1825,7 +1848,9 @@ Sweeper acquires distributed Redis lock (`SET sweeper:leader {replica_id} NX EX 
 | `ILLMAdapter` | All adapters + scaffold-generated adapters |
 | `IEventBus` | `EventHubsEventBus`, `KafkaEventBus`, `InProcessEventBus` |
 | `IFrameworkAdapter` | `LangGraphAdapter`, `SemanticKernelAdapter`, `CrewAIAdapter` |
-| `ITimerService` | `AzureServiceBusTimerAdapter`, `RedisTimerService` (legacy) |
+| `ITimerService` | `AzureServiceBusTimerAdapter` (R1–R3) · `AWSEventBridgeTimerAdapter` (R4 AWS) · `CeleryBeatTimerAdapter` (R4 on-prem) |
+| `ICredentialProvider` | `AzureManagedIdentityCredentialAdapter` (R1–R3) · `AWSIRSACredentialAdapter` (R4 AWS) · `VaultCredentialAdapter` (R4 on-prem) |
+| `IGuardrailService` | `AzureContentSafetyGuardrailAdapter` (R1–R3) · `AmazonComprehendGuardrailAdapter` (R4 AWS) · `LocalModelGuardrailAdapter` (R4 on-prem) |
 | `IInjectionDetector` | `PromptInjectionDetector`, `NoOpInjectionDetector` (tests/dev) |
 | `IContextObserver` | `ContextObserverService`, `NoOpObserver` (tests) |
 
@@ -1837,6 +1862,8 @@ Sweeper acquires distributed Redis lock (`SET sweeper:leader {replica_id} NX EX 
 | `IInjectionDetector` ≠ `IContextObserver` | Pre-assembly safety ≠ post-assembly quality |
 | `IToolSchemaValidator` ≠ `IInjectionDetector` | Schema validation ≠ injection detection |
 | `ITimerService` ≠ `IEventBus` | Timer scheduling ≠ event routing |
+| `ICredentialProvider` ≠ `ITimerService` | Auth token supply ≠ delayed event scheduling |
+| `IGuardrailService` ≠ `IInjectionDetector` | AI-layer content policy ≠ in-process pattern detection |
 | `BloatThresholds` / `RotThresholds` / `ContentQualityThresholds` separate | Components consume only what they need |
 
 ### D — Dependency Inversion
@@ -1845,8 +1872,11 @@ Sweeper acquires distributed Redis lock (`SET sweeper:leader {replica_id} NX EX 
 AgentCortexService
     → IEventBus (not EventHubsEventBus)
     → IInjectionDetector (not PromptInjectionDetector)
+    → IGuardrailService (not AzureContentSafetyGuardrailAdapter)
     → IToolSchemaValidator (not ToolSchemaValidator)
     → ITaskRepository (not PostgresTaskRepository)
+    → ITimerService (not AzureServiceBusTimerAdapter)
+    → ICredentialProvider (not AzureManagedIdentityCredentialAdapter)
 
 ThresholdResolver
     → IConsumerRepository, ITaskRepository
@@ -1854,13 +1884,14 @@ ThresholdResolver
     — SafetyFloors constants live in domain layer, not infra
 
 All concrete bindings in infrastructure/container.py
+— changing deployment profile = swapping bindings here only; zero domain changes
 ```
 
 ---
 
 ## 22. Technology Stack
 
-### 22.1 Primary (Azure-Native)
+### 22.1 Azure-Native Profile — Releases 1–3
 
 | Layer | Technology | Role |
 |---|---|---|
@@ -1868,19 +1899,37 @@ All concrete bindings in infrastructure/container.py
 | Ingress | Azure API Management | JWT auth, rate limiting, mTLS |
 | Event bus (service) | Azure Event Hubs (Kafka endpoint) + aiokafka | Event publishing and consuming |
 | Event bus (library) | asyncio.Queue bounded (`InProcessEventBus`) | In-process coordination |
-| Timer | Azure Service Bus scheduled messages | Replaces custom ITimerService |
+| Timer (`ITimerService`) | `AzureServiceBusTimerAdapter` — scheduled_enqueue_time_utc | Guaranteed delayed delivery, no polling |
 | Job state | Azure Cache for Redis (Enterprise E10) with AUTH+TLS | TTL-bounded state machine |
 | Persistence | Azure Database for PostgreSQL Flexible Server + SQLAlchemy 2.x async | All domain data |
 | Snapshots | Azure Blob Storage ZRS + aiohttp | Version archives; content canonical in Postgres |
 | LLM (primary) | Azure OpenAI (Managed Identity) | gpt-4o, o3, etc. |
 | LLM (multi-model) | AI Foundry routing + per-vendor adapters | Anthropic, Gemini, Llama, Mistral, Bedrock |
-| Safety | Azure AI Content Safety (Prompt Shield) | T1 p_uq injection, T2 RAG poisoning |
-| Identity | Azure Managed Identity + Workload Identity | Pod-level Entra ID auth; no API keys in pods |
+| Guardrail (`IGuardrailService`) | `AzureContentSafetyGuardrailAdapter` — Prompt Shield + content filter | Injection + harmful content detection |
+| Credential (`ICredentialProvider`) | `AzureManagedIdentityCredentialAdapter` — AKS Workload Identity | Pod-level Entra ID auth; no API keys in pods |
 | Secrets | Azure Key Vault (RBAC mode) | API keys for external vendors |
 | Compute | AKS + Istio service mesh | Workload isolation, mTLS between pods |
 | Autoscaling | KEDA | Event-driven HPA on Event Hubs lag |
 | Observability | Application Insights + Managed Prometheus + Managed Grafana | APM, metrics, dashboards |
 | Logs | Log Analytics Workspace | Structured JSON logs |
+
+### 22.2 Deployment Profiles — Adapter Swap Map
+
+Exactly one implementation per port type is active per deployment. Swap by flipping `enabled` flags in `config/adapters_registry.yaml` and rebinding in `infrastructure/container.py`. Domain and application layers are unchanged across all profiles.
+
+| Port | Azure (R1–R3) | AWS — Release 4 | On-Prem K8s — Release 4 |
+|---|---|---|---|
+| `ICredentialProvider` | `AzureManagedIdentityCredentialAdapter` (Workload Identity) | `AWSIRSACredentialAdapter` (EKS IRSA + STS) | `VaultCredentialAdapter` (K8s auth + KV v2) |
+| `ITimerService` | `AzureServiceBusTimerAdapter` (scheduled_enqueue_time_utc) | `AWSEventBridgeTimerAdapter` (one-time AT schedule) | `CeleryBeatTimerAdapter` (countdown + worker pod) |
+| `IGuardrailService` | `AzureContentSafetyGuardrailAdapter` (Prompt Shield + filter) | `AmazonComprehendGuardrailAdapter` (Bedrock Guardrails + Comprehend) | `LocalModelGuardrailAdapter` (self-hosted DeBERTa endpoint) |
+| `ISnapshotStore` | `AzureBlobSnapshotStore` | `S3SnapshotStore` | `S3SnapshotStore` (MinIO endpoint) |
+| `IEventBus` | `EventHubsEventBus` (Kafka endpoint) | `KafkaEventBus` (Amazon MSK) | `KafkaEventBus` (Apache Kafka) |
+| **Compute** | AKS + Istio | Amazon EKS + Istio | Any K8s + Istio |
+| **Autoscaling** | KEDA (azure-event-hub scaler) | KEDA (aws-sqs / kafka scaler) | KEDA (kafka scaler) |
+| **LLM** | Azure OpenAI (Managed Identity) | AWS Bedrock (`BedrockAdapter`) or OpenAI direct | OpenAI direct or self-hosted via `LocalLLMAdapter` |
+| **Secrets** | Azure Key Vault | AWS Secrets Manager | HashiCorp Vault |
+
+**Coverage gap note (AWS profile):** AWS has no native equivalent to Azure AI Prompt Shield for prompt injection classification. `AmazonComprehendGuardrailAdapter` provides toxicity detection and optional Bedrock Guardrails policy enforcement. The in-process `PatternMatcher` (always active, cloud-agnostic) remains the primary injection layer on AWS. For parity with Azure, pair with `LocalModelGuardrailAdapter` or deploy a DeBERTa-based injection classifier as a sidecar service.
 
 ### 22.2 Application Libraries
 
@@ -1997,15 +2046,22 @@ class StuckJobSweeper:
 ### 23.4 Library Mode
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  LangGraph / SK / CrewAI Application Process            │
-│    └── awa_agent_cortex (DEPLOYMENT_MODE=library)       │
-│          IEventBus       → InProcessEventBus (max=1000) │
-│          ITimerService   → AzureServiceBusTimerAdapter  │
-│          IJobStateRepo   → Redis or InMemory            │
-│          ITaskRepository → PostgresTaskRepository       │
-│          IInjectionDetector → PromptInjectionDetector   │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  LangGraph / SK / CrewAI Application Process                     │
+│    └── awa_agent_cortex (DEPLOYMENT_MODE=library)                │
+│                                                                  │
+│    Azure profile (R1–R3):                                        │
+│          IEventBus          → InProcessEventBus (max=1000)      │
+│          ITimerService      → AzureServiceBusTimerAdapter        │
+│          ICredentialProvider→ AzureManagedIdentityCredential     │
+│          IGuardrailService  → AzureContentSafetyGuardrailAdapter │
+│          IJobStateRepo      → Redis or InMemory                  │
+│          ITaskRepository    → PostgresTaskRepository             │
+│          IInjectionDetector → PromptInjectionDetector            │
+│                                                                  │
+│    AWS profile (R4): swap ITimerService, ICredentialProvider,    │
+│    IGuardrailService bindings in container.py — all else same    │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -2130,9 +2186,11 @@ Four releases. Each release is independently deployable and delivers production 
 
 ---
 
-### Release 4 — Production Scale & Full Multi-Model
+### Release 4 — Production Scale, Full Multi-Model & Multi-Cloud
 
-**Strategic intent:** Certify the platform for full-scale production across all AWA agents, all supported models, with sub-60ms fast-path latency.
+**Strategic intent:** Certify the platform for full-scale production across all AWA agents, all supported models, with sub-60ms fast-path latency — and extend deployment reach to AWS EKS and on-premises Kubernetes clusters using the multi-cloud adapter framework established in Releases 1–3.
+
+**Why multi-cloud lands here:** Releases 1–3 build on Azure exclusively. The hexagonal adapter framework (credential, timer, guardrail ports) was designed from R1 to make this swap mechanical — no domain changes, no application service changes. Release 4 executes the swap, validates the non-Azure profiles under production conditions, and closes all remaining FMEA items.
 
 **Scope:**
 
@@ -2140,12 +2198,17 @@ Four releases. Each release is independently deployable and delivers production 
 |---|---|
 | **4a — Multi-Model Expansion** | `GeminiAdapter`, `LlamaAdapter`, `MistralAdapter`, `BedrockAdapter`, `CompassCore42Adapter` (scaffold-generated); AI Foundry multi-model routing; RabbitMQ + Azure Service Bus messaging adapters |
 | **4b — Auto-Scale & Resilience** | KEDA multi-signal HPA (Event Hubs lag + CPU + p99 latency); `RAGCircuitBreaker` (REQUIRED → OPTIONAL auto-downgrade at 80% timeout rate, A-26); Alertmanager rules (bloat > 90%, rot > 60 days, failure rate > 1%, RAG timeout > 5%) |
-| **4c — Production Validation** | Managed Grafana dashboards; load testing to validate 30–60ms fast path; FMEA P2 items closed (A-27, A-28); S3 signed URL expiry + Blob policy audit |
+| **4c — AWS Deployment Profile** | Enable `AWSIRSACredentialAdapter`, `AWSEventBridgeTimerAdapter`, `AmazonComprehendGuardrailAdapter` (+ optional Bedrock Guardrails) in `container.py`; validate on Amazon EKS with MSK (Kafka), ElastiCache for Redis, RDS PostgreSQL, S3; KEDA kafka scaler; IRSA role configuration; acceptance tests against AWS profile |
+| **4d — On-Prem K8s Deployment Profile** | Enable `VaultCredentialAdapter`, `CeleryBeatTimerAdapter`, `LocalModelGuardrailAdapter` (DeBERTa self-hosted) in `container.py`; validate on bare K8s with Apache Kafka, self-hosted Redis Cluster, PostgreSQL, MinIO; Celery worker + beat Deployments; Vault K8s auth configuration; acceptance tests against on-prem profile |
+| **4e — Production Validation** | Managed Grafana dashboards; load testing across all three deployment profiles to validate 30–60ms fast path; FMEA P2 items closed (A-27, A-28); S3 signed URL expiry + Blob policy audit; multi-profile CI pipeline (Azure / AWS / on-prem profiles tested in parallel) |
 
 **Release 4 exit criteria:**
-- Fast path p99 ≤ 60ms (no dynamic components, cache warm)
+- Fast path p99 ≤ 60ms (no dynamic components, cache warm) on all three deployment profiles
 - All registered LLM models available across all consumers
-- RAGCircuitBreaker validated under simulated RAG outage
+- `RAGCircuitBreaker` validated under simulated RAG outage
+- AWS deployment profile acceptance-tested on EKS: all adapter swap points verified
+- On-prem deployment profile acceptance-tested on bare K8s: Vault, Celery Beat, local model guardrail all operational
+- Guardrail coverage gap documented: AWS profile Prompt Shield gap acknowledged; `PatternMatcher` + Comprehend + optional DeBERTa sidecar configured as compensating control
 - All 28 FMEA action items (A-01–A-28) closed
 
 ---
@@ -2157,11 +2220,13 @@ Four releases. Each release is independently deployable and delivers production 
 | **Release 1** | Governed, safe, task-scoped prompt assembly for all agents | P0 items A-01–A-14 + T10, T12 | Ungoverned LLM calls; no injection detection; no task scoping |
 | **Release 2** | Self-service modification; full rot/quality observability | P1 items A-15–A-25 | Engineers remain the bottleneck for every prompt update |
 | **Release 3** | Transparent framework integration (LangGraph/SK/CrewAI) | — | Framework teams build their own ad-hoc integrations |
-| **Release 4** | Full multi-model; sub-60ms at scale | P2 items A-26–A-28 | Platform cannot serve all models; latency degrades under load |
+| **Release 4** | Full multi-model; sub-60ms at scale; AWS + on-prem K8s deployment profiles | P2 items A-26–A-28 | Platform cannot serve all models; latency degrades; locked to Azure |
 
 ---
 
-*Document version: 4.0.0 — 2026-05-27*  
-*Supersedes: v3.0.0 — 2026-05-26*  
+*Document version: 4.1.0 — 2026-05-27*  
+*Supersedes: v4.0.0 — 2026-05-27*  
 *Reference FMEA: AWA_Agent_Cortex_FMEA.md v1.0.0*  
-*28 FMEA action items incorporated: A-01 through A-28 (P0: A-01–A-14, P1: A-15–A-25, P2: A-26–A-28)*
+*28 FMEA action items incorporated: A-01 through A-28 (P0: A-01–A-14, P1: A-15–A-25, P2: A-26–A-28)*  
+*Multi-cloud adapter framework: ICredentialProvider, IGuardrailService, ITimerService (extended) — 9 implementations across Azure, AWS, on-prem K8s*  
+*Deployment profiles: Azure-native (Releases 1–3) · AWS EKS (Release 4) · On-prem K8s (Release 4)*
