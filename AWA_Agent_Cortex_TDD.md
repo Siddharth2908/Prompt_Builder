@@ -2059,19 +2059,105 @@ These invariants are correctness constraints that must be codified as assertions
 
 ## 26. Phased Delivery Roadmap
 
-| Phase | Scope | Deliverable |
-|---|---|---|
-| **P1 — Core Assembly** | `domain/`, `ports/`, `AgentCortexService`, `SectionLoader` (batch), `TemplateExecutor`, `AzureOpenAIAdapter`, `AnthropicAdapter`, `EventHubsEventBus`, `PostgresSectionRepository`, static-only build | End-to-end static prompt assembly on Azure |
-| **P2 — Dynamic Components** | `DynamicDependencyResolver` (field-level merge), `JobStateMachine` (Lua CAS), Redis state, `AzureServiceBusTimerAdapter`, `InProcessEventBus` (bounded), all 7 event flows | Full dynamic prompt construction; race-safe state machine |
-| **P3 — Versioning** | `VersionManagerService`, `AzureBlobSnapshotStore`, rollback API (scoped TOTP, single-use), `ContentReviewGate` (4-eyes), audit log | Safe config change management with rollback and review gate |
-| **P4 — Observation** | `GlobalThresholdConfig`, `ThresholdResolver` (in-memory cache + safety floors), `BloatDetector`, `RotDetector`, `ContentQualityDetector`, `ContextObserverService` (parallel), embedding cache + circuit breaker, `RuntimeContentMetrics`, `config/defaults/observer_thresholds.yaml` | Config-driven prompt quality monitoring; zero hardcoded thresholds; parallel evaluation |
-| **P5 — Security Services** | `PromptInjectionDetector` + `AzurePromptShieldClient`, `ToolSchemaValidator`, RAG XML delimiters, consumer ownership enforcement on all job APIs, Redis AUTH+TLS config, Event Hubs ACL specification, `StuckJobSweeper` | All FMEA P0 security and resilience items |
-| **P6 — Onboarding** | `onboarding/` package, Jinja2 scaffold (`awa_agent_cortex` package paths), `ac-cli` adapter and use case commands, all YAML templates | Engineer self-service onboarding |
-| **P7 — Modification** | `AdapterModificationService`, `UseCaseModificationService`, modify CLI commands | Live parameter modification with rollback |
-| **P8 — AI Task Hierarchy** | `AWATask`, `ITaskRepository`, `PostgresTaskRepository`, `TaskService` (draining pattern), task-aware `SectionLoader`, task-aware `DynamicDependencyResolver`, `ac-cli task`, task REST endpoints | Full Consumer → Task → Job scoping |
-| **P9 — Framework Integrations** | `integrations/` package: LangGraph (`AgentCortexNode`, compound job ID), SK (`AgentCortexPlugin`, `PromptEnrichmentFilter`), CrewAI (`AWACrewLLM`, graceful degrade); `InProcessEventBus`; `ContextBridgeService`; `IDCorrelationService`; memory adapters; `p_tools` | Plug-and-play integration with LangGraph, Semantic Kernel, and CrewAI |
-| **P10 — Multi-Model Expansion** | Remaining LLM adapters (Gemini, Llama, Mistral, Bedrock, CompassCore42), RabbitMQ and Azure Service Bus messaging adapters, AI Foundry multi-model routing | Full multi-model, multi-broker production readiness |
-| **P11 — Production Hardening** | Multi-signal KEDA HPA, `RAGCircuitBreaker` (REQUIRED → OPTIONAL auto-downgrade), `EmbeddingCircuitBreaker`, Managed Grafana dashboards, Alertmanager rules, load testing to validate 30–60ms fast path | Production-grade scalability and reliability |
+Four releases. Each release is independently deployable and delivers production value on its own.
+
+---
+
+### Release 1 — Governed Platform + Dynamic Context + Task Hierarchy
+
+**Strategic intent:** Every AWA agent's LLM call is governed, injection-screened, quality-gated, and task-scoped from day one. This is the mandatory foundation — no agent goes to production without it.
+
+**Combines:** MVP 1 (Prompt Governance) · MVP 2 (Dynamic Context + Safety) · MVP 4 (AI Task Hierarchy)
+
+**Why these three together:** MVP 1 without MVP 2 cannot handle any agent that uses RAG or agent context — which is most agents. MVP 4 (task hierarchy) must ship at the same time because retrofitting task scoping after teams have registered consumers forces a painful migration. All three together give teams a complete, production-ready platform on first contact.
+
+#### Release 1 — Internal Phases
+
+| Phase | Scope |
+|---|---|
+| **1a — Core Domain** | `domain/`, `ports/`, `AgentCortexService`, `SectionLoader` (batch query + LRU cache), `TemplateExecutor`, `AzureOpenAIAdapter`, `AnthropicAdapter`, `EventHubsEventBus`, `PostgresSectionRepository`, static-only build; `p_guard` always enforced; idempotency keys on all events; Lua CAS state machine; token budget enforcement; basic bloat detection; `ac-cli use-case onboard`; structured logs |
+| **1b — Dynamic Components** | `DynamicDependencyResolver` (field-level merge), `JobStateMachine` (full 6-state, Lua CAS), `AzureServiceBusTimerAdapter`, `InProcessEventBus` (bounded, max=1000), `StuckJobSweeper`, all 7 event flows (A–G); config snapshot at INITIATED; version snapshot at ASSEMBLING |
+| **1c — Security Services** | `PromptInjectionDetector` + `AzurePromptShieldClient`; `ToolSchemaValidator`; RAG XML delimiters in LLM payload; `SafetyFloors` in `ThresholdResolver`; consumer ownership enforcement on all job-scoped APIs; Redis AUTH+TLS; Event Hubs ACL specification; `ContentQualityDetector`; `ContextObserverService` (parallel `asyncio.gather`, detector exception isolation); `RuntimeContentMetrics` |
+| **1d — AI Task Hierarchy** | `AWATask`, `ITaskRepository`, `PostgresTaskRepository`, `TaskService` (draining pattern, `inflight_count`); task-aware `SectionLoader` (4-tier version chain, INV-09); task-aware `DynamicDependencyResolver`; `ac-cli task` commands; task REST endpoints; tasks block in onboarding YAML; `GlobalThresholdConfig`; `ThresholdResolver` (in-memory cache, safety floors) |
+
+**Release 1 exit criteria:**
+- All AWA agents onboarded; zero ad-hoc prompt strings in production
+- `p_guard` present on 100% of LLM calls
+- `PromptInjectionDetector` screening 100% of `p_uq` and RAG content
+- `ContentQualityDetector` gating all runtime sections
+- Consumer → Task → Job hierarchy in use by at least one multi-task use case
+- All FMEA P0 action items (A-01 to A-14) and critical security items (A-05, A-06, A-07, A-08) verified
+
+---
+
+### Release 2 — Self-Service Modification & Full Observability
+
+**Strategic intent:** Domain teams and SMEs can update, rollback, and monitor prompt content without engineering involvement.
+
+**Scope:**
+
+| Phase | Scope |
+|---|---|
+| **2a — Versioning & Review Gate** | `VersionManagerService`; `AzureBlobSnapshotStore`; rollback API (scoped TOTP single-use, operation-bound); `ContentReviewGate` (4-eyes, `PENDING_REVIEW` → `APPROVE` → `ACTIVE`); `section:approve` RBAC claim; audit log (append-only) |
+| **2b — Modification Framework** | Sparse diff `use_case_modify.yaml`; `UseCaseModificationService`; `AdapterModificationService`; `ac-cli modify` + `ac-cli rollback`; `ac-cli section list-pending` + `ac-cli section approve`; idempotent modify (same YAML twice = no-op) |
+| **2c — Full Observation** | `RotDetector` (staleness + semantic drift on static sections); `EmbeddingCircuitBreaker`; embedding vector cache in Redis (SHA-256 keyed, 24h TTL); per-consumer and per-task threshold overrides; `ThresholdResolver` full 4-tier merge; section content LRU cache; `config/defaults/observer_thresholds.yaml` |
+
+**Release 2 exit criteria:**
+- A domain SME can submit a modify YAML, get a second approver, and go live with no engineering involvement
+- Rollback of any prompt section completes in under 2 minutes
+- `RotDetector` flagging static sections not updated in > 30 days
+- All FMEA P1 items (A-15 to A-25) closed
+
+---
+
+### Release 3 — Framework Integrations
+
+**Strategic intent:** LangGraph, Semantic Kernel, and CrewAI teams get full Agent Cortex governance transparently — zero changes to their orchestration logic.
+
+**Scope:**
+
+| Phase | Scope |
+|---|---|
+| **3a — LangGraph** | `AgentCortexNode` (drop-in graph node); `AgentCortexRunnable` (LangChain Runnable); `AWAPromptState` (TypedDict); `LangGraphCheckpointContextAdapter`; compound job ID `{thread_id}:{run_id}` (A-23) |
+| **3b — Semantic Kernel** | `AgentCortexPlugin` (KernelPlugin); `PromptEnrichmentFilter` (transparent middleware, exception isolation); `AWAAIConnector`; `SKVectorMemoryContextAdapter` |
+| **3c — CrewAI** | `AWACrewLLM` (BaseLLM wrapper, graceful degrade to raw LLM on build failure); `AgentCortexTool` (BaseTool); `AWAAgentMixin`; `CrewAIMemoryContextAdapter`; crew name as role discriminator |
+| **3d — Shared Integration Layer** | `ContextBridgeService`; `IDCorrelationService` + three `ConsumerResolutionStrategy` implementations; `p_tools` fully wired with `ToolSchemaValidator`; `ac-cli integration test` commands |
+
+**Release 3 exit criteria:**
+- At least one LangGraph, one SK, and one CrewAI agent running in production through Agent Cortex
+- Library mode (`InProcessEventBus`) validated under load
+- Graceful degrade confirmed: framework agent falls back to raw LLM cleanly when Agent Cortex build fails
+
+---
+
+### Release 4 — Production Scale & Full Multi-Model
+
+**Strategic intent:** Certify the platform for full-scale production across all AWA agents, all supported models, with sub-60ms fast-path latency.
+
+**Scope:**
+
+| Phase | Scope |
+|---|---|
+| **4a — Multi-Model Expansion** | `GeminiAdapter`, `LlamaAdapter`, `MistralAdapter`, `BedrockAdapter`, `CompassCore42Adapter` (scaffold-generated); AI Foundry multi-model routing; RabbitMQ + Azure Service Bus messaging adapters |
+| **4b — Auto-Scale & Resilience** | KEDA multi-signal HPA (Event Hubs lag + CPU + p99 latency); `RAGCircuitBreaker` (REQUIRED → OPTIONAL auto-downgrade at 80% timeout rate, A-26); Alertmanager rules (bloat > 90%, rot > 60 days, failure rate > 1%, RAG timeout > 5%) |
+| **4c — Production Validation** | Managed Grafana dashboards; load testing to validate 30–60ms fast path; FMEA P2 items closed (A-27, A-28); S3 signed URL expiry + Blob policy audit |
+
+**Release 4 exit criteria:**
+- Fast path p99 ≤ 60ms (no dynamic components, cache warm)
+- All registered LLM models available across all consumers
+- RAGCircuitBreaker validated under simulated RAG outage
+- All 28 FMEA action items (A-01–A-28) closed
+
+---
+
+### Release Summary
+
+| Release | Core Unlock | FMEA Coverage | Key Risk if Skipped |
+|---|---|---|---|
+| **Release 1** | Governed, safe, task-scoped prompt assembly for all agents | P0 items A-01–A-14 + T10, T12 | Ungoverned LLM calls; no injection detection; no task scoping |
+| **Release 2** | Self-service modification; full rot/quality observability | P1 items A-15–A-25 | Engineers remain the bottleneck for every prompt update |
+| **Release 3** | Transparent framework integration (LangGraph/SK/CrewAI) | — | Framework teams build their own ad-hoc integrations |
+| **Release 4** | Full multi-model; sub-60ms at scale | P2 items A-26–A-28 | Platform cannot serve all models; latency degrades under load |
 
 ---
 
