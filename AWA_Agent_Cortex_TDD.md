@@ -27,7 +27,7 @@
 16. [Control Plane REST API](#16-control-plane-rest-api)
 17. [ac-cli Reference](#17-ac-cli-reference)
 18. [Full Module & Class Reference](#18-full-module--class-reference)
-19. [UML Diagrams](#19-uml-diagrams)
+19. [UML Diagrams](#19-uml-diagrams) *(19.1 Domain · 19.2 Services & Ports · 19.3 State Machine · 19.4 Sequence · 19.5 Deployment Profiles)*
 20. [Design Patterns](#20-design-patterns)
 21. [SOLID Compliance](#21-solid-compliance)
 22. [Technology Stack](#22-technology-stack)
@@ -1659,15 +1659,45 @@ classDiagram
 classDiagram
     direction TB
 
-    class IEventBus { <<interface>>; +publish(event); +subscribe(type, handler) }
-    class IInjectionDetector { <<interface>>; +scan(content, component) InjectionAlert }
-    class IToolSchemaValidator { <<interface>>; +validate(schema, consumer_id) ValidationResult }
+    %% ── Ports (interfaces) ───────────────────────────────────────────────────
+    class IEventBus {
+        <<interface>>
+        +publish(event)
+        +subscribe(type, handler)
+    }
+    class IInjectionDetector {
+        <<interface>>
+        +scan(content, component) InjectionAlert
+    }
+    class IToolSchemaValidator {
+        <<interface>>
+        +validate(schema, consumer_id) ValidationResult
+    }
+    class ITimerService {
+        <<interface>>
+        +schedule(delay_s, event, topic) ScheduledTimer
+        +cancel(timer_id) bool
+    }
+    class ICredentialProvider {
+        <<interface>>
+        +get_bearer_token(scope) str
+        +get_secret(name) str
+    }
+    class IGuardrailService {
+        <<interface>>
+        +scan(content, consumer_id, job_id) GuardrailResult
+    }
+
+    %% ── Core service ─────────────────────────────────────────────────────────
     class AgentCortexService {
         -section_loader SectionLoader
         -threshold_resolver ThresholdResolver
         -injection_detector IInjectionDetector
+        -guardrail IGuardrailService
         -tool_validator IToolSchemaValidator
         -event_bus IEventBus
+        -timer ITimerService
+        -credential ICredentialProvider
     }
     class ThresholdResolver {
         -_cache dict
@@ -1676,17 +1706,40 @@ classDiagram
     }
     class ContextObserverService {
         +observe(section_map, job, template, thresholds) ObservationReport
-        # asyncio.gather for parallel evaluation
     }
 
+    %% ── Service → port dependencies ──────────────────────────────────────────
     AgentCortexService --> IEventBus
     AgentCortexService --> IInjectionDetector
+    AgentCortexService --> IGuardrailService
     AgentCortexService --> IToolSchemaValidator
     AgentCortexService --> ThresholdResolver
+    AgentCortexService --> ITimerService
+    AgentCortexService --> ICredentialProvider
+
+    %% ── IEventBus implementations ─────────────────────────────────────────────
     EventHubsEventBus ..|> IEventBus
     InProcessEventBus ..|> IEventBus
+    KafkaEventBus ..|> IEventBus
+
+    %% ── IInjectionDetector / IToolSchemaValidator implementations ─────────────
     PromptInjectionDetector ..|> IInjectionDetector
     ToolSchemaValidator ..|> IToolSchemaValidator
+
+    %% ── ITimerService implementations (one active per deployment profile) ──────
+    AzureServiceBusTimerAdapter ..|> ITimerService
+    AWSEventBridgeTimerAdapter ..|> ITimerService
+    CeleryBeatTimerAdapter ..|> ITimerService
+
+    %% ── ICredentialProvider implementations ───────────────────────────────────
+    AzureManagedIdentityCredentialAdapter ..|> ICredentialProvider
+    AWSIRSACredentialAdapter ..|> ICredentialProvider
+    VaultCredentialAdapter ..|> ICredentialProvider
+
+    %% ── IGuardrailService implementations ────────────────────────────────────
+    AzureContentSafetyGuardrailAdapter ..|> IGuardrailService
+    AmazonComprehendGuardrailAdapter ..|> IGuardrailService
+    LocalModelGuardrailAdapter ..|> IGuardrailService
 ```
 
 ### 19.3 Job State Machine
@@ -1695,7 +1748,7 @@ classDiagram
 stateDiagram-v2
     [*] --> INITIATED : PromptBuildRequested (idempotency check)
 
-    INITIATED --> AWAITING_DYNAMIC : checklist non-empty (Azure SB timers scheduled)
+    INITIATED --> AWAITING_DYNAMIC : checklist non-empty (ITimerService.schedule per component)
     INITIATED --> READY_TO_ASSEMBLE : checklist empty
 
     AWAITING_DYNAMIC --> READY_TO_ASSEMBLE : all resolved / PROCEED_WITHOUT timeout
@@ -1714,11 +1767,15 @@ stateDiagram-v2
 
 ```mermaid
 sequenceDiagram
+    %% Participants are shown as port interfaces; concrete implementations
+    %% (e.g. AzureServiceBusTimerAdapter, AzureContentSafetyGuardrailAdapter)
+    %% are resolved by container.py at startup based on the active deployment profile.
+
     participant C  as Caller
     participant AC as Agent Cortex
-    participant PS as PromptShield
+    participant GS as IGuardrailService
     participant R  as Redis (Lua)
-    participant SB as Azure Service Bus
+    participant TM as ITimerService
     participant RP as RAG Pipeline
     participant CO as Context Observer
 
@@ -1726,9 +1783,9 @@ sequenceDiagram
     AC ->> R  : SET event:processed:{key} NX EX 3600 → proceed
     AC ->> AC : load AWATask + merge config (field-level)
     AC ->> R  : store config_snapshot on job
-    AC ->> PS : scan(p_uq) → no injection
+    AC ->> GS : scan(p_uq, consumer_id, job_id) → PASS
     AC ->> R  : Lua HSET checklist {p_rag: pending}
-    AC ->> SB : schedule timeout (6000ms)
+    AC ->> TM : schedule(delay_s=6000, event=TimeoutEvent, topic)
     Note over AC: AWAITING_DYNAMIC
 
     RP ->> AC : RAGContextRetrieved (idempotency_key)
@@ -1739,12 +1796,92 @@ sequenceDiagram
     AC ->> R  : Lua CAS READY_TO_ASSEMBLE → ASSEMBLING (wins)
     AC ->> R  : store version_snapshot
     AC ->> AC : SectionLoader.load_sections_batch (single SQL + LRU)
-    AC ->> PS : scan_rag_sources (parallel) → no injection
-    AC ->> SB : cancel timeout
+    AC ->> GS : scan(rag_sources, consumer_id, job_id) → PASS
+    AC ->> TM : cancel(timer_id)
     AC ->> CO : observe (asyncio.gather — parallel)
     CO -->> AC : ObservationReport (no BLOCK)
     AC ->> C  : PromptBuilt
 ```
+
+### 19.5 Multi-Cloud Deployment Profiles — Adapter Swap Map
+
+One implementation per port type is active at runtime. Changing deployment platform = rebinding these three ports in `infrastructure/container.py`.
+
+```mermaid
+classDiagram
+    direction TB
+
+    %% ── Ports ────────────────────────────────────────────────────────────────
+    class ICredentialProvider { <<port>> }
+    class ITimerService { <<port>> }
+    class IGuardrailService { <<port>> }
+
+    %% ── Azure profile (Releases 1–3) ─────────────────────────────────────────
+    class AzureManagedIdentityCredentialAdapter {
+        <<Azure · R1-R3>>
+        AKS Workload Identity
+        DefaultAzureCredential
+    }
+    class AzureServiceBusTimerAdapter {
+        <<Azure · R1-R3>>
+        scheduled_enqueue_time_utc
+        cancel by sequence number
+    }
+    class AzureContentSafetyGuardrailAdapter {
+        <<Azure · R1-R3>>
+        Prompt Shield layer
+        Content filter layer
+    }
+
+    %% ── AWS profile (Release 4) ───────────────────────────────────────────────
+    class AWSIRSACredentialAdapter {
+        <<AWS · R4>>
+        EKS IRSA + STS
+        boto3 Session
+    }
+    class AWSEventBridgeTimerAdapter {
+        <<AWS · R4>>
+        AT schedule one-shot
+        ActionAfterCompletion DELETE
+    }
+    class AmazonComprehendGuardrailAdapter {
+        <<AWS · R4>>
+        Bedrock Guardrails optional
+        Comprehend toxicity
+    }
+
+    %% ── On-prem K8s profile (Release 4) ──────────────────────────────────────
+    class VaultCredentialAdapter {
+        <<On-Prem · R4>>
+        K8s auth method
+        KV v2 secrets
+    }
+    class CeleryBeatTimerAdapter {
+        <<On-Prem · R4>>
+        apply_async countdown
+        worker pod required
+    }
+    class LocalModelGuardrailAdapter {
+        <<On-Prem · R4>>
+        self-hosted HTTP endpoint
+        DeBERTa injection classifier
+    }
+
+    %% ── Port bindings ────────────────────────────────────────────────────────
+    AzureManagedIdentityCredentialAdapter ..|> ICredentialProvider
+    AWSIRSACredentialAdapter              ..|> ICredentialProvider
+    VaultCredentialAdapter                ..|> ICredentialProvider
+
+    AzureServiceBusTimerAdapter  ..|> ITimerService
+    AWSEventBridgeTimerAdapter   ..|> ITimerService
+    CeleryBeatTimerAdapter       ..|> ITimerService
+
+    AzureContentSafetyGuardrailAdapter   ..|> IGuardrailService
+    AmazonComprehendGuardrailAdapter     ..|> IGuardrailService
+    LocalModelGuardrailAdapter           ..|> IGuardrailService
+```
+
+**Coverage gap (AWS profile):** `AmazonComprehendGuardrailAdapter` does not include a prompt injection AI classifier equivalent to Azure Prompt Shield. The in-process `PatternMatcher` (always active, cloud-agnostic) is the primary injection layer. For parity, pair with `LocalModelGuardrailAdapter` (DeBERTa sidecar) in the same cluster.
 
 ---
 
@@ -1776,9 +1913,27 @@ Four-tier priority chain: job override → task pin → consumer pin → LATEST.
 
 ### 20.9 Ports and Adapters (Hexagonal)
 ```
-Outer:  Azure services (Event Hubs, Service Bus, Redis, Postgres, Blob, OpenAI, AI Content Safety)
-Middle: IEventBus, ITimerService, ILLMAdapter, IInjectionDetector, IToolSchemaValidator ...
-Inner:  AgentCortexService, JobStateMachine, TemplateExecutor, ThresholdResolver ...
+Outer (Azure profile, R1–R3):
+  Event Hubs · Service Bus · Redis Enterprise · PostgreSQL · Blob ZRS
+  Azure OpenAI · AI Content Safety · Key Vault · Workload Identity
+
+Outer (AWS profile, R4):
+  Amazon MSK (Kafka) · EventBridge Scheduler · ElastiCache · RDS PostgreSQL
+  S3 · Bedrock / OpenAI · Comprehend + Bedrock Guardrails · Secrets Manager · IRSA
+
+Outer (On-Prem profile, R4):
+  Apache Kafka · Redis Cluster · PostgreSQL · MinIO · OpenAI / vLLM
+  DeBERTa inference service · HashiCorp Vault · Celery broker
+
+Middle (ports — identical across all profiles):
+  IEventBus · ITimerService · ICredentialProvider · IGuardrailService
+  ILLMAdapter · ISnapshotStore · IInjectionDetector · IToolSchemaValidator
+  IContextObserver · ISectionRepository · IJobStateRepository · IAuditLog
+
+Inner (domain + services — zero cloud awareness):
+  AgentCortexService · JobStateMachine · TemplateExecutor
+  ThresholdResolver · SectionLoader · DynamicDependencyResolver
+  ContextObserverService · PromptInjectionDetector (in-process)
 ```
 
 ### 20.10 Factory — `LLMAdapterRegistry.get()`
