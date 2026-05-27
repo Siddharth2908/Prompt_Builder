@@ -1,0 +1,46 @@
+# ==============================================================================
+# AWA Agent Cortex — Adapter Onboarding
+# Adapter: Azure Service Bus Timer
+# Target:  AKS (Azure-native)
+# ==============================================================================
+#
+# WHEN TO USE THIS
+#   Azure-native deployment. Uses Service Bus scheduled messages
+#   (scheduled_enqueue_time_utc) for guaranteed delayed event delivery.
+#   No polling process required — the broker holds the message and
+#   delivers it exactly once at the scheduled wall-clock time.
+#   Cancellation is possible before the enqueue time via sequence number.
+#
+# HOW IT WORKS
+#   schedule() → sender.schedule_messages(message, deliver_at_utc)
+#              → Service Bus returns sequence_number as timer_id
+#   cancel()   → sender.cancel_scheduled_messages(sequence_number)
+#
+# USAGE
+#   ac-cli adapter validate --config azure_service_bus_timer_adapter.yaml
+#   ac-cli adapter onboard  --config azure_service_bus_timer_adapter.yaml \
+#                           --output-dir ./awa_agent_cortex/adapters/timer/
+# ==============================================================================
+
+adapter:
+
+  name:         azure_service_bus_timer
+  display_name: "Azure Service Bus Timer"
+  version:      "1.0.0"
+  adapter_type: timer
+  author:       "platform-ai@company.com"
+  enabled:      false
+
+  timer:
+    backend: azure_service_bus
+
+    azure_service_bus:
+      env_var_connection_string: AZURE_SERVICEBUS_CONN_STR
+      # Topic where timed events are delivered.
+      # Must match the consumer subscription for timer events.
+      default_topic: awa-agent-cortex-timers
+
+  scaffold:
+    generate_class: true
+    generate_tests: true
+    output_module:  adapters/timer

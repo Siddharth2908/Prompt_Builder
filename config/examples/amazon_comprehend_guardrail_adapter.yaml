@@ -1,0 +1,71 @@
+# ==============================================================================
+# AWA Agent Cortex — Adapter Onboarding
+# Adapter: Amazon Comprehend + Bedrock Guardrails (Guardrail)
+# Target:  Amazon EKS (AWS-native)
+# ==============================================================================
+#
+# WHEN TO USE THIS
+#   AWS-native deployment. Combines:
+#     • AWS Bedrock Guardrails (optional) — topic denial, word filters, grounding
+#     • Amazon Comprehend detect_toxic_content — toxicity label classification
+#
+# IMPORTANT COVERAGE GAP vs AZURE
+#   AWS has no native equivalent to Azure Prompt Shield (AI-powered prompt
+#   injection detection). The in-process PatternMatcher is the primary injection
+#   guard in this profile. Bedrock Guardrails adds topic/policy enforcement
+#   but does not specifically classify prompt injection patterns.
+#
+#   If prompt injection detection depth is critical, consider adding the
+#   local_model adapter (DeBERTa-based) alongside this adapter.
+#
+# SCAN LAYERS (executed in order; first BLOCK terminates the scan)
+#   1. Bedrock Guardrails (if BEDROCK_GUARDRAIL_ID is set):
+#      action=GUARDRAIL_INTERVENED → BLOCK (confidence=0.90)
+#   2. Comprehend detect_toxic_content:
+#      score ≥ toxicity_threshold → BLOCK (confidence=0.80)
+#   3. Either unavailable → WARN (build continues; alert emitted)
+#
+# PREREQUISITES (Bedrock Guardrails — optional)
+#   1. Bedrock Guardrail created in the AWS console or via CLI.
+#   2. IRSA role has bedrock:ApplyGuardrail permission.
+#   3. Set BEDROCK_GUARDRAIL_ID and BEDROCK_GUARDRAIL_VERSION env vars.
+#
+# PREREQUISITES (Comprehend — always active)
+#   1. IRSA role has comprehend:DetectToxicContent permission.
+#   2. detect_toxic_content is available in: us-east-1, us-west-2, eu-west-1.
+#      Check regional availability before deploying in other regions.
+#
+# USAGE
+#   ac-cli adapter validate --config amazon_comprehend_guardrail_adapter.yaml
+#   ac-cli adapter onboard  --config amazon_comprehend_guardrail_adapter.yaml \
+#                           --output-dir ./awa_agent_cortex/adapters/guardrail/
+# ==============================================================================
+
+adapter:
+
+  name:         amazon_comprehend_guardrail
+  display_name: "Amazon Comprehend + Bedrock Guardrails"
+  version:      "1.0.0"
+  adapter_type: guardrail
+  author:       "platform-ai@company.com"
+  enabled:      false
+
+  guardrail:
+    provider: amazon_comprehend
+
+    amazon_comprehend:
+      # AWS region. Must support detect_toxic_content (us-east-1 recommended).
+      env_var_region: AWS_REGION
+
+      # Comprehend toxicity score threshold (0.0–1.0). Score >= this → BLOCK.
+      toxicity_threshold: 0.80
+
+      # Bedrock Guardrails — set BEDROCK_GUARDRAIL_ID env var to activate.
+      # Leave unset to use Comprehend only.
+      # BEDROCK_GUARDRAIL_ID      = <guardrail-id>
+      # BEDROCK_GUARDRAIL_VERSION = DRAFT | <version-number>
+
+  scaffold:
+    generate_class: true
+    generate_tests: true
+    output_module:  adapters/guardrail

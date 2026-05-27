@@ -33,7 +33,7 @@ adapter:
                                   # Lowercase, underscores only. e.g. compass_core42
   display_name: REQUIRED          # Human-readable. e.g. "Compass Core42"
   version:      "1.0.0"          # Semantic version of this adapter
-  adapter_type: REQUIRED          # llm | messaging | snapshot_store | timer
+  adapter_type: REQUIRED          # llm | messaging | snapshot_store | timer | credential | guardrail
   author:       REQUIRED          # engineer email or team name
   enabled:      true              # false = registered but inactive at startup
 
@@ -137,6 +137,59 @@ adapter:
     azure_timer_trigger:
       function_app_url_env_var: REQUIRED
       function_key_env_var:     REQUIRED
+
+    azure_service_bus:
+      env_var_connection_string: REQUIRED   # e.g. AZURE_SERVICEBUS_CONN_STR
+      default_topic:             awa-agent-cortex-timers
+
+    aws_eventbridge:
+      env_var_target_arn:   REQUIRED   # e.g. EVENTBRIDGE_TARGET_ARN
+      env_var_role_arn:     REQUIRED   # e.g. EVENTBRIDGE_SCHEDULER_ROLE_ARN
+      env_var_region:       AWS_REGION
+      schedule_group:       awa-agent-cortex   # Must be pre-created
+
+  # ── Credential Adapter (fill when adapter_type: credential) ───────────────
+  # Remove this block entirely if adapter_type != credential
+  credential:
+    provider: REQUIRED            # azure_managed_identity | aws_irsa | vault
+
+    # azure_managed_identity fields
+    env_var_client_id:  AZURE_CLIENT_ID      # User-Assigned MI client ID (optional)
+    env_var_vault_uri:  AZURE_KEYVAULT_URI   # Key Vault URI for get_secret()
+
+    # aws_irsa fields
+    env_var_region:     AWS_REGION
+
+    # vault fields
+    env_var_vault_addr:  REQUIRED            # e.g. VAULT_ADDR
+    env_var_vault_role:  REQUIRED            # e.g. VAULT_ROLE
+    env_var_vault_mount: VAULT_K8S_MOUNT     # Kubernetes auth mount (default: kubernetes)
+    kv_mount:            secret              # KV v2 mount path
+
+  # ── Guardrail Adapter (fill when adapter_type: guardrail) ─────────────────
+  # Remove this block entirely if adapter_type != guardrail
+  guardrail:
+    provider: REQUIRED            # azure_content_safety | amazon_comprehend | local_model
+
+    # azure_content_safety fields
+    azure_content_safety:
+      env_var_endpoint:   REQUIRED   # e.g. AZURE_CONTENT_SAFETY_ENDPOINT
+      env_var_api_key:    AZURE_CONTENT_SAFETY_KEY   # omit to use Managed Identity
+      severity_threshold: 4          # 0–6; >= this value triggers BLOCK
+
+    # amazon_comprehend fields
+    amazon_comprehend:
+      env_var_region:       REQUIRED   # e.g. AWS_REGION
+      toxicity_threshold:   0.80       # Comprehend score >= this triggers BLOCK
+      # Bedrock Guardrails (optional — set env vars BEDROCK_GUARDRAIL_ID,
+      # BEDROCK_GUARDRAIL_VERSION to activate)
+
+    # local_model fields
+    local_model:
+      env_var_endpoint_url:  REQUIRED   # e.g. GUARDRAIL_MODEL_ENDPOINT
+      classify_path:         /classify  # POST path on the inference server
+      injection_threshold:   0.80       # Model score >= this triggers BLOCK
+      timeout_seconds:       5          # HTTP timeout; keep low to protect p99
 
   # ── Scaffold Generation ─────────────────────────────────────────────────────
   scaffold:

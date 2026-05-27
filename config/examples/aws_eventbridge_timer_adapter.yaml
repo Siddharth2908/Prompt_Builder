@@ -1,0 +1,70 @@
+# ==============================================================================
+# AWA Agent Cortex — Adapter Onboarding
+# Adapter: AWS EventBridge Scheduler Timer
+# Target:  Amazon EKS (AWS-native)
+# ==============================================================================
+#
+# WHEN TO USE THIS
+#   AWS-native deployment. Uses EventBridge Scheduler one-time schedules for
+#   delayed event delivery. Each scheduled event creates a one-shot schedule
+#   that fires once and self-deletes (ActionAfterCompletion=DELETE).
+#   The target receives the serialised BaseEvent payload.
+#
+# SUPPORTED TARGETS
+#   SQS queue   — set target_arn to the queue ARN; consumer reads from SQS
+#   SNS topic   — set target_arn to the SNS topic ARN
+#   Lambda      — set target_arn to the Lambda function ARN
+#   Recommended: SQS queue for at-least-once delivery guarantee
+#
+# PREREQUISITES
+#   1. EventBridge Scheduler schedule group created:
+#        aws scheduler create-schedule-group --name awa-agent-cortex
+#   2. IAM Role for EventBridge Scheduler to invoke the target:
+#        Trust: scheduler.amazonaws.com
+#        Permission: sqs:SendMessage on the target queue ARN
+#   3. IRSA permissions on the Agent Cortex pod role:
+#        scheduler:CreateSchedule
+#        scheduler:DeleteSchedule
+#        iam:PassRole (on the EventBridge executor role)
+#
+# HOW IT WORKS
+#   schedule() → scheduler.create_schedule(at(<ISO datetime>), ActionAfterCompletion=DELETE)
+#              → schedule name is returned as timer_id
+#   cancel()   → scheduler.delete_schedule(Name=timer_id)
+#              → returns False if already fired and self-deleted (not an error)
+#
+# USAGE
+#   ac-cli adapter validate --config aws_eventbridge_timer_adapter.yaml
+#   ac-cli adapter onboard  --config aws_eventbridge_timer_adapter.yaml \
+#                           --output-dir ./awa_agent_cortex/adapters/timer/
+# ==============================================================================
+
+adapter:
+
+  name:         aws_eventbridge_timer
+  display_name: "AWS EventBridge Scheduler"
+  version:      "1.0.0"
+  adapter_type: timer
+  author:       "platform-ai@company.com"
+  enabled:      false
+
+  timer:
+    backend: aws_eventbridge
+
+    aws_eventbridge:
+      # ARN of the SQS queue, SNS topic, or Lambda that receives the event.
+      env_var_target_arn: EVENTBRIDGE_TARGET_ARN
+
+      # ARN of the IAM Role that EventBridge Scheduler assumes to invoke the target.
+      env_var_role_arn: EVENTBRIDGE_SCHEDULER_ROLE_ARN
+
+      # AWS region for the scheduler client.
+      env_var_region: AWS_REGION
+
+      # EventBridge schedule group name. Must be pre-created.
+      schedule_group: awa-agent-cortex
+
+  scaffold:
+    generate_class: true
+    generate_tests: true
+    output_module:  adapters/timer

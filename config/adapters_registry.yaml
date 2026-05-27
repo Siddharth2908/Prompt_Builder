@@ -130,3 +130,72 @@ timer:
     class:        awa_agent_cortex.infrastructure.timer_service.RedisTimerService
     enabled:      true
     version:      "1.0.0"
+
+  - name:         azure_service_bus_timer
+    display_name: "Azure Service Bus Timer"
+    class:        awa_agent_cortex.adapters.timer.azure_service_bus_timer_adapter.AzureServiceBusTimerAdapter
+    enabled:      false
+    version:      "1.0.0"
+
+  - name:         aws_eventbridge_timer
+    display_name: "AWS EventBridge Scheduler"
+    class:        awa_agent_cortex.adapters.timer.aws_eventbridge_timer_adapter.AWSEventBridgeTimerAdapter
+    enabled:      false
+    version:      "1.0.0"
+
+  - name:         celery_beat_timer
+    display_name: "Celery Beat Timer"
+    class:        awa_agent_cortex.adapters.timer.celery_beat_timer_adapter.CeleryBeatTimerAdapter
+    enabled:      false
+    version:      "1.0.0"
+
+# ── Credential Adapters ────────────────────────────────────────────────────────
+# ICredentialProvider implementations. Exactly ONE should be enabled per
+# deployment. Provides Bearer tokens and secret values to other adapters.
+# Swap here + container.py to change authentication strategy.
+
+credential:
+
+  - name:         azure_managed_identity
+    display_name: "Azure Managed Identity"
+    class:        awa_agent_cortex.adapters.credential.azure_managed_identity_adapter.AzureManagedIdentityCredentialAdapter
+    enabled:      true
+    version:      "1.0.0"
+
+  - name:         aws_irsa
+    display_name: "AWS IAM Roles for Service Accounts (IRSA)"
+    class:        awa_agent_cortex.adapters.credential.aws_irsa_adapter.AWSIRSACredentialAdapter
+    enabled:      false
+    version:      "1.0.0"
+
+  - name:         vault
+    display_name: "HashiCorp Vault"
+    class:        awa_agent_cortex.adapters.credential.vault_credential_adapter.VaultCredentialAdapter
+    enabled:      false
+    version:      "1.0.0"
+
+# ── Guardrail Adapters ─────────────────────────────────────────────────────────
+# IGuardrailService implementations. Exactly ONE should be enabled per
+# deployment. Provides the AI-layer second line of defence for prompt injection
+# and content policy enforcement. The in-process PatternMatcher always runs
+# first regardless of which guardrail adapter is active.
+
+guardrail:
+
+  - name:         azure_content_safety
+    display_name: "Azure AI Content Safety"
+    class:        awa_agent_cortex.adapters.guardrail.azure_content_safety_adapter.AzureContentSafetyGuardrailAdapter
+    enabled:      true
+    version:      "1.0.0"
+
+  - name:         amazon_comprehend_guardrail
+    display_name: "Amazon Comprehend + Bedrock Guardrails"
+    class:        awa_agent_cortex.adapters.guardrail.amazon_comprehend_guardrail_adapter.AmazonComprehendGuardrailAdapter
+    enabled:      false
+    version:      "1.0.0"
+
+  - name:         local_model_guardrail
+    display_name: "Self-Hosted Model Guardrail (On-Prem)"
+    class:        awa_agent_cortex.adapters.guardrail.local_model_guardrail_adapter.LocalModelGuardrailAdapter
+    enabled:      false
+    version:      "1.0.0"
